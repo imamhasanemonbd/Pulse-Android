@@ -1,0 +1,28 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="100dp"
+    android:height="100dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <!-- Gradient Circle -->
+    <path android:pathData="M50,50m-45,0a45,45 0,1 1,90 0a45,45 0,1 1,-90 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="5"
+                android:startY="50"
+                android:endX="95"
+                android:endY="50"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF00CC" /> <!-- Pink/Red -->
+                <item android:offset="1" android:color="#3333FF" /> <!-- Blue/Purple -->
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- White Waveform -->
+    <path
+        android:pathData="M15,50 L35,50 L40,45 L45,55 L50,25 L55,75 L60,45 L65,55 L70,50 L85,50"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
