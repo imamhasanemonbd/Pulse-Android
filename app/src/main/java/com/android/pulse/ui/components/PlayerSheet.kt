@@ -462,25 +462,27 @@ fun PlayerSheet(
                     }
                 )
 
-                val isDownloaded by playerManager.database.offlineSongDao().isDownloaded(track!!.id).collectAsState(initial = false)
+                // BUG FIX: Check both database flag AND local progress to determine UI state
+                val isDownloadedByDb by playerManager.database.offlineSongDao().isDownloaded(track!!.id).collectAsState(initial = false)
+                val isActuallyFinished = isDownloadedByDb && currentProgress == null
 
                 ListItem(
                     headlineContent = { 
-                        Text(if (isDownloaded) "Remove Download" else if (currentProgress != null) "Downloading... ${(currentProgress * 100).toInt()}%" else "Download") 
+                        Text(if (isActuallyFinished) "Remove Download" else if (currentProgress != null) "Downloading... ${(currentProgress * 100).toInt()}%" else "Download") 
                     },
                     leadingContent = { 
-                        if (currentProgress != null && !isDownloaded) {
+                        if (currentProgress != null && !isActuallyFinished) {
                             CircularProgressIndicator(
                                 progress = { currentProgress },
                                 modifier = Modifier.size(24.dp),
                                 strokeWidth = 2.dp
                             )
                         } else {
-                            Icon(if (isDownloaded) Icons.Default.DeleteOutline else Icons.Default.Download, null, tint = if (isDownloaded) MaterialTheme.colorScheme.error else LocalContentColor.current) 
+                            Icon(if (isActuallyFinished) Icons.Default.DeleteOutline else Icons.Default.Download, null, tint = if (isActuallyFinished) MaterialTheme.colorScheme.error else LocalContentColor.current) 
                         }
                     },
                     modifier = Modifier.clickable { 
-                        if (isDownloaded) {
+                        if (isActuallyFinished) {
                             DownloadManager.removeTrack(context, playerManager.database, track!!.id)
                         } else if (currentProgress == null) {
                             DownloadManager.downloadTrack(context, playerManager.database, track!!)

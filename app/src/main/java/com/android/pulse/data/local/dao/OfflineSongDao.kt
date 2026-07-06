@@ -15,6 +15,6 @@ interface OfflineSongDao {
     @Query("DELETE FROM offline_songs WHERE id = :songId")
     suspend fun deleteOfflineSong(songId: String)
 
-    @Query("SELECT EXISTS(SELECT 1 FROM offline_songs WHERE id = :songId)")
+    @Query("SELECT EXISTS(SELECT 1 FROM offline_songs WHERE id = :songId AND isFinished = 1)")
     fun isDownloaded(songId: String): Flow<Boolean>
 }
