@@ -35,6 +35,20 @@ object DownloadManager {
         scope.launch {
             try {
                 Log.d(TAG, "Starting download for: ${track.title}")
+                
+                // 1. Create immediate placeholder entry in DB so it appears in the list
+                database.offlineSongDao().insertOfflineSong(
+                    OfflineSongEntity(
+                        id = track.id,
+                        title = track.title,
+                        artist = track.artist,
+                        thumbnailUrl = track.thumbnail,
+                        duration = track.duration,
+                        localPath = null,
+                        isFinished = false
+                    )
+                )
+                
                 updateProgress(track.id, 0.01f)
 
                 val streamUrl = InnerTubeRepository.getStreamUrl(track.id)
@@ -74,7 +88,7 @@ object DownloadManager {
                     }
                 }
 
-                // Save to database
+                // 2. Update database with final file path and finished flag
                 database.offlineSongDao().insertOfflineSong(
                     OfflineSongEntity(
                         id = track.id,
@@ -82,13 +96,14 @@ object DownloadManager {
                         artist = track.artist,
                         thumbnailUrl = track.thumbnail,
                         duration = track.duration,
-                        localPath = file.absolutePath
+                        localPath = file.absolutePath,
+                        isFinished = true
                     )
                 )
 
                 Log.d(TAG, "Download complete: ${track.title}")
                 updateProgress(track.id, 1.0f)
-                delay(2000) // Keep 100% for a bit
+                delay(1000)
                 removeDownload(track.id)
 
             } catch (e: Exception) {

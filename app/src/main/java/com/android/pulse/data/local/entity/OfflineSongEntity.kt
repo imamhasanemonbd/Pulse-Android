@@ -11,7 +11,8 @@ data class OfflineSongEntity(
     val artist: String,
     val thumbnailUrl: String?,
     val duration: Int?,
-    val localPath: String,
+    val localPath: String?, // Null if not finished downloading
+    val isFinished: Boolean = false,
     val downloadedAt: Long = System.currentTimeMillis()
 )
 

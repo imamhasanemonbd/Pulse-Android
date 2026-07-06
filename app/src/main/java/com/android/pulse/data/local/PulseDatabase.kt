@@ -22,7 +22,7 @@ import com.android.pulse.data.local.entity.PlaylistSongCrossRef
         PlaylistSongCrossRef::class,
         OfflineSongEntity::class
     ], 
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class PulseDatabase : RoomDatabase() {
