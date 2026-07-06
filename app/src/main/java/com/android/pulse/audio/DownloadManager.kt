@@ -16,12 +16,16 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * Robust background download manager with progress tracking.
+ * Robust background download manager with progress tracking and validation.
  */
 object DownloadManager {
     private const val TAG = "DownloadManager"
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .followRedirects(true)
+        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
 
     private val _downloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
     val downloadProgress: StateFlow<Map<String, Float>> = _downloadProgress.asStateFlow()
@@ -29,14 +33,17 @@ object DownloadManager {
     private val activeDownloads = mutableSetOf<String>()
 
     fun downloadTrack(context: Context, database: PulseDatabase, track: Track) {
-        if (activeDownloads.contains(track.id)) return
+        if (activeDownloads.contains(track.id)) {
+            Log.d(TAG, "Download already in progress for: ${track.id}")
+            return
+        }
         activeDownloads.add(track.id)
 
         scope.launch {
             try {
-                Log.d(TAG, "Starting download for: ${track.title}")
+                Log.d(TAG, "Starting download for: ${track.title} (${track.id})")
                 
-                // 1. Create immediate placeholder entry in DB so it appears in the list
+                // 1. Initial Placeholder
                 database.offlineSongDao().insertOfflineSong(
                     OfflineSongEntity(
                         id = track.id,
@@ -49,46 +56,59 @@ object DownloadManager {
                     )
                 )
                 
-                updateProgress(track.id, 0.01f)
+                updateProgress(track.id, 0.001f)
 
+                // 2. Fetch Stream URL
                 val streamUrl = InnerTubeRepository.getStreamUrl(track.id)
                 if (streamUrl == null) {
-                    Log.e(TAG, "Could not fetch stream URL for ${track.id}")
-                    removeDownload(track.id)
-                    return@launch
+                    throw Exception("Could not resolve stream URL for ${track.id}")
                 }
+                Log.d(TAG, "Resolved stream URL for ${track.id}")
 
+                // 3. Execute Download
                 val request = Request.Builder().url(streamUrl).build()
                 val response = client.newCall(request).execute()
                 
-                if (!response.isSuccessful || response.body == null) {
-                    Log.e(TAG, "Download request failed for ${track.id}")
-                    removeDownload(track.id)
-                    return@launch
+                if (!response.isSuccessful) {
+                    throw Exception("Network request failed: ${response.code} ${response.message}")
                 }
-
-                val body = response.body!!
+                
+                val body = response.body ?: throw Exception("Response body is null")
                 val contentLength = body.contentLength()
-                val file = File(context.getExternalFilesDir(null), "downloads/${track.id}.mp3")
-                file.parentFile?.mkdirs()
+                Log.d(TAG, "Download body size: $contentLength bytes")
 
+                val downloadsDir = File(context.getExternalFilesDir(null), "downloads")
+                if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                
+                val file = File(downloadsDir, "${track.id}.mp3")
+                if (file.exists()) file.delete() // Start fresh
+
+                var totalRead: Long = 0
                 body.byteStream().use { input ->
                     FileOutputStream(file).use { output ->
-                        val buffer = ByteArray(16 * 1024)
+                        val buffer = ByteArray(32 * 1024)
                         var bytesRead: Int
-                        var totalRead: Long = 0
                         
                         while (input.read(buffer).also { bytesRead = it } != -1) {
                             output.write(buffer, 0, bytesRead)
                             totalRead += bytesRead
                             if (contentLength > 0) {
-                                updateProgress(track.id, totalRead.toFloat() / contentLength)
+                                val progress = totalRead.toFloat() / contentLength
+                                updateProgress(track.id, progress.coerceIn(0.01f, 0.99f))
                             }
                         }
+                        output.flush()
                     }
                 }
 
-                // 2. Update database with final file path and finished flag
+                // 4. Final Validation
+                if (totalRead == 0L || !file.exists()) {
+                    throw Exception("File was not written correctly (size 0)")
+                }
+
+                Log.d(TAG, "Download finished. Saved ${totalRead} bytes to ${file.absolutePath}")
+
+                // 5. Commit to Database
                 database.offlineSongDao().insertOfflineSong(
                     OfflineSongEntity(
                         id = track.id,
@@ -101,13 +121,19 @@ object DownloadManager {
                     )
                 )
 
-                Log.d(TAG, "Download complete: ${track.title}")
                 updateProgress(track.id, 1.0f)
-                delay(1000)
+                delay(1500)
                 removeDownload(track.id)
 
             } catch (e: Exception) {
-                Log.e(TAG, "Download failed for ${track.id}", e)
+                Log.e(TAG, "FATAL DOWNLOAD ERROR for ${track.id}: ${e.message}", e)
+                // Cleanup partial file if it exists
+                try {
+                    val file = File(context.getExternalFilesDir(null), "downloads/${track.id}.mp3")
+                    if (file.exists()) file.delete()
+                    database.offlineSongDao().deleteOfflineSong(track.id)
+                } catch (ce: Exception) { /* Ignore cleanup errors */ }
+
                 removeDownload(track.id)
             }
         }

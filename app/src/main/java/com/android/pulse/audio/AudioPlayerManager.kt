@@ -159,6 +159,7 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
                 val startIndex = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
                 _currentTrack.value = queue[startIndex]
 
+                // Map media items initially with placeholder, loadTrackUriForIndex will update them
                 val mediaItems = queue.map { item ->
                     val metadata = MediaMetadata.Builder()
                         .setTitle(item.title)
@@ -168,7 +169,7 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
 
                     MediaItem.Builder()
                         .setMediaId(item.id)
-                        .setUri("https://dummy.mp3") // Placeholder
+                        .setUri("https://dummy.mp3")
                         .setMediaMetadata(metadata)
                         .build()
                 }
@@ -189,15 +190,15 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
         if (index !in queue.indices) return
         val track = queue[index]
         
-        // TRUE OFFLINE CHECK: Check if local file exists first
+        // CHECK DATABASE FOR OFFLINE FILE
         val offlineSong = database.offlineSongDao().getAllOfflineSongs().first().find { it.id == track.id && it.isFinished }
         val localFile = offlineSong?.localPath?.let { File(it) }
         
-        val uri = if (localFile != null && localFile.exists()) {
-            android.util.Log.d("AudioPlayer", "Playing OFFLINE: ${track.title}")
+        val uri = if (localFile != null && localFile.exists() && localFile.length() > 0) {
+            android.util.Log.d("AudioPlayer", "Verified OFFLINE File: ${localFile.absolutePath} (${localFile.length()} bytes)")
             Uri.fromFile(localFile)
         } else {
-            android.util.Log.d("AudioPlayer", "Fetching ONLINE: ${track.title}")
+            android.util.Log.d("AudioPlayer", "Offline file not found or invalid. Fetching ONLINE URL for: ${track.id}")
             InnerTubeRepository.getStreamUrl(track.id)?.let { Uri.parse(it) }
         }
 
@@ -206,7 +207,10 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
                 val currentItem = player.getMediaItemAt(index)
                 val updatedItem = currentItem.buildUpon().setUri(uri).build()
                 player.replaceMediaItem(index, updatedItem)
+                android.util.Log.d("AudioPlayer", "Successfully assigned URI to player: $uri")
             }
+        } else {
+            android.util.Log.e("AudioPlayer", "Could not resolve ANY URI (Online or Offline) for ${track.id}")
         }
     }
 
