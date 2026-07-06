@@ -10,6 +10,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -133,8 +134,29 @@ object DownloadManager {
                     if (file.exists()) file.delete()
                     database.offlineSongDao().deleteOfflineSong(track.id)
                 } catch (ce: Exception) { /* Ignore cleanup errors */ }
-
+                
                 removeDownload(track.id)
+            }
+        }
+    }
+
+    fun removeTrack(context: Context, database: PulseDatabase, trackId: String) {
+        scope.launch {
+            try {
+                // Remove from database
+                database.offlineSongDao().deleteOfflineSong(trackId)
+                
+                // Remove file
+                val file = File(context.getExternalFilesDir(null), "downloads/$trackId.mp3")
+                if (file.exists()) {
+                    file.delete()
+                    Log.d(TAG, "Deleted local file for $trackId")
+                }
+                
+                // Ensure it's removed from progress tracking
+                removeDownload(trackId)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error removing track $trackId", e)
             }
         }
     }

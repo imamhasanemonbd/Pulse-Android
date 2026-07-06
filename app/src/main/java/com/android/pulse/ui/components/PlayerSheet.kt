@@ -117,7 +117,7 @@ fun PlayerSheet(
                             offsetY.animateTo(
                                 targetValue = 0f, 
                                 animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    dampingRatio = Spring.DampingRatioLowBouncy,
                                     stiffness = Spring.StiffnessHigh
                                 )
                             )
@@ -466,21 +466,25 @@ fun PlayerSheet(
 
                 ListItem(
                     headlineContent = { 
-                        Text(if (isDownloaded) "Downloaded" else if (currentProgress != null) "Downloading... ${(currentProgress * 100).toInt()}%" else "Download") 
+                        Text(if (isDownloaded) "Remove Download" else if (currentProgress != null) "Downloading... ${(currentProgress * 100).toInt()}%" else "Download") 
                     },
                     leadingContent = { 
                         if (currentProgress != null && !isDownloaded) {
                             CircularProgressIndicator(
-                                progress = currentProgress,
+                                progress = { currentProgress },
                                 modifier = Modifier.size(24.dp),
                                 strokeWidth = 2.dp
                             )
                         } else {
-                            Icon(if (isDownloaded) Icons.Default.DownloadDone else Icons.Default.Download, null) 
+                            Icon(if (isDownloaded) Icons.Default.DeleteOutline else Icons.Default.Download, null, tint = if (isDownloaded) MaterialTheme.colorScheme.error else LocalContentColor.current) 
                         }
                     },
-                    modifier = Modifier.clickable(enabled = !isDownloaded && currentProgress == null) { 
-                        DownloadManager.downloadTrack(context, playerManager.database, track!!)
+                    modifier = Modifier.clickable { 
+                        if (isDownloaded) {
+                            DownloadManager.removeTrack(context, playerManager.database, track!!.id)
+                        } else if (currentProgress == null) {
+                            DownloadManager.downloadTrack(context, playerManager.database, track!!)
+                        }
                         showMoreOptions = false
                     }
                 )
