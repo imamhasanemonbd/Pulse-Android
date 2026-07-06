@@ -62,6 +62,19 @@ fun MainScreen(playerManager: AudioPlayerManager) {
 
     val isMiniPlayerVisible = currentTrack != null && !showPlayerSheet
 
+    // Helper to close all overlays when switching tabs
+    fun closeAllOverlays() {
+        showAboutScreen = false
+        showHistoryScreen = false
+        showSearchScreen = false
+        showLikedMusic = false
+        showOfflineMusic = false
+        showCachedMusic = false
+        showLocalMusic = false
+        showAllPlaylists = false
+        selectedPlaylistForView = null
+    }
+
     // HIERARCHICAL BACK NAVIGATION:
     // Liked -> Playlists -> Library -> Home -> Exit
     // About -> Setting -> Home -> Exit
@@ -120,6 +133,8 @@ fun MainScreen(playerManager: AudioPlayerManager) {
                         onItemClick = { route ->
                             val index = items.indexOfFirst { it.route == route }
                             if (index != -1) {
+                                // BUG FIX: Reset all overlays when switching tabs via bottom nav
+                                closeAllOverlays()
                                 scope.launch {
                                     pagerState.animateScrollToPage(index)
                                 }
@@ -194,7 +209,6 @@ fun MainScreen(playerManager: AudioPlayerManager) {
                 Overlay(visible = showLikedMusic, springSpec = springSpec) {
                     LikedSongsView(playerManager = playerManager, onBack = { 
                         showLikedMusic = false
-                        showAllPlaylists = true // Per requested order: Liked -> Playlists
                     }, modifier = overlayModifier)
                 }
 
