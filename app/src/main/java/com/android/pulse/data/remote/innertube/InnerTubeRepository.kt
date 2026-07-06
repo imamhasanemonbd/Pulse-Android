@@ -6,7 +6,7 @@ import com.android.pulse.data.remote.innertube.model.*
 import com.google.gson.Gson
 
 /**
- * Singleton repository with "Greedy" parsing strategy.
+ * Singleton repository with strict Music-Only filtering logic.
  */
 object InnerTubeRepository {
     private const val TAG = "PULSE_TAG"
@@ -33,8 +33,8 @@ object InnerTubeRepository {
     private suspend fun ensureSession() {
         if (InnerTubeClient.getVisitorData() != null) return
         runCatching {
-            val request = BrowseRequest(context = InnerTubeClient.createMWebContext(), browseId = "FEmusic_home")
-            val response = InnerTubeClient.apiService.browse(request, InnerTubeClient.USER_AGENT_MWEB)
+            val request = BrowseRequest(context = InnerTubeClient.createWebContext(), browseId = "FEmusic_home")
+            val response = InnerTubeClient.apiService.browse(request, InnerTubeClient.USER_AGENT_WEB)
             val visitorData = response.responseContext?.visitorData
             if (visitorData != null) {
                 InnerTubeClient.setVisitorData(visitorData)
@@ -52,16 +52,17 @@ object InnerTubeRepository {
     }
 
     suspend fun searchMusic(query: String, params: String? = null): List<Track> {
-        Log.e(TAG, "GREEDY: searching '$query'")
+        Log.e(TAG, "MUSIC-FILTER: searching '$query'")
         return try {
-            val request = SearchRequest(context = InnerTubeClient.createMWebContext(), query = query, params = params)
-            val response = InnerTubeClient.apiService.search(request, InnerTubeClient.USER_AGENT_MWEB)
+            // WEB_REMIX naturally filters for YouTube Music results
+            val request = SearchRequest(context = InnerTubeClient.createWebContext(), query = query, params = params)
+            val response = InnerTubeClient.apiService.search(request, InnerTubeClient.USER_AGENT_WEB)
             response.responseContext?.visitorData?.let { InnerTubeClient.setVisitorData(it) }
             
             val tracks = mutableListOf<Track>()
             parseGreedy(response, tracks)
             
-            Log.e(TAG, "GREEDY: found ${tracks.size} tracks")
+            Log.e(TAG, "MUSIC-FILTER: found ${tracks.size} tracks")
             tracks.distinctBy { it.id }
         } catch (e: Exception) {
             Log.e(TAG, "Search fatal", e)
@@ -74,15 +75,15 @@ object InnerTubeRepository {
     }
 
     suspend fun getHomeData(categoryParams: String? = null, relatedToVideoId: String? = null): HomeData {
-        Log.e(TAG, "GREEDY: getHomeData(related=$relatedToVideoId)")
+        Log.e(TAG, "MUSIC-FILTER: getHomeData(related=$relatedToVideoId)")
         return try {
             val allTracks = mutableListOf<Track>()
             val categories = mutableListOf<Category>()
             
             val response = if (relatedToVideoId != null) {
-                InnerTubeClient.apiService.next(NextRequest(context = InnerTubeClient.createMWebContext(), videoId = relatedToVideoId), InnerTubeClient.USER_AGENT_MWEB)
+                InnerTubeClient.apiService.next(NextRequest(context = InnerTubeClient.createWebContext(), videoId = relatedToVideoId), InnerTubeClient.USER_AGENT_WEB)
             } else {
-                InnerTubeClient.apiService.browse(BrowseRequest(context = InnerTubeClient.createMWebContext(), browseId = "FEmusic_home", params = categoryParams), InnerTubeClient.USER_AGENT_MWEB)
+                InnerTubeClient.apiService.browse(BrowseRequest(context = InnerTubeClient.createWebContext(), browseId = "FEmusic_home", params = categoryParams), InnerTubeClient.USER_AGENT_WEB)
             }
 
             parseGreedy(response, allTracks)
@@ -98,7 +99,7 @@ object InnerTubeRepository {
             }
             
             if (allTracks.isEmpty()) {
-                Log.e(TAG, "GREEDY: Home yielded 0 tracks, using trending fallback")
+                Log.e(TAG, "MUSIC-FILTER: Home yielded 0 tracks, using trending fallback")
                 allTracks.addAll(getTrending())
             }
             
@@ -106,7 +107,6 @@ object InnerTubeRepository {
             val speedDial = distinct.take(12)
             val quickPicks = distinct.drop(12).take(30).ifEmpty { distinct.shuffled().take(20) }
             
-            Log.e(TAG, "GREEDY: Home finished. SpeedDial=${speedDial.size}, QuickPicks=${quickPicks.size}")
             HomeData(quickPicks, speedDial, categories.distinctBy { it.title })
         } catch (e: Exception) {
             Log.e(TAG, "Home fatal", e)
@@ -115,8 +115,7 @@ object InnerTubeRepository {
     }
 
     /**
-     * GREEDY PARSER: Traverses the response tree looking for any map that contains a "videoId".
-     * Once a videoId is found, it attempts to extract title/artist/thumb from THAT SAME map.
+     * GREEDY PARSER with music-specific validation.
      */
     private fun parseGreedy(response: InnerTubeResponse, out: MutableList<Track>) {
         val root = convertToStd(response.contents)
@@ -124,13 +123,6 @@ object InnerTubeRepository {
         
         deepScan(root, out)
         deepScan(commands, out)
-        
-        if (out.isEmpty()) {
-            val json = gson.toJson(response)
-            Regex("\"videoId\":\"([a-zA-Z0-9_-]{11})\"").findAll(json).map { it.groupValues[1] }.distinct().take(20).forEach { id ->
-                out.add(Track(id, "Track $id", "Unknown Artist", "https://i.ytimg.com/vi/$id/hqdefault.jpg", 0))
-            }
-        }
     }
 
     private fun deepScan(node: Any?, out: MutableList<Track>) {
@@ -140,23 +132,62 @@ object InnerTubeRepository {
         } else if (node is Map<*, *>) {
             val vid = extractVideoId(node)
             if (vid != null) {
-                val title = extractTitle(node)
-                if (title != null) {
-                    val track = Track(
-                        vid, 
-                        title, 
-                        extractArtist(node) ?: "Unknown Artist", 
-                        extractThumbnail(node) ?: "https://i.ytimg.com/vi/$vid/hqdefault.jpg", 
-                        0
-                    )
-                    if (out.none { it.id == vid }) {
-                        out.add(track)
-                        Log.d(TAG, "GREEDY PARSED: ${track.title} ($vid)")
+                // Validation: Only add if it looks like a music track
+                if (isMusicMedia(node)) {
+                    val title = extractTitle(node)
+                    if (title != null) {
+                        val track = Track(
+                            vid, 
+                            title, 
+                            extractArtist(node) ?: "Unknown Artist", 
+                            extractThumbnail(node) ?: "https://i.ytimg.com/vi/$vid/hqdefault.jpg", 
+                            0
+                        )
+                        if (out.none { it.id == vid }) {
+                            out.add(track)
+                            Log.d(TAG, "MUSIC VALIDATED: ${track.title} ($vid)")
+                        }
                     }
                 }
             }
             node.values.forEach { deepScan(it, out) }
         }
+    }
+
+    /**
+     * Strict validation to filter out telefilms, vlogs, and general videos.
+     */
+    private fun isMusicMedia(map: Map<*, *>): Boolean {
+        val json = gson.toJson(map)
+        
+        // 1. Check for specific Music Renderers/Types
+        val hasMusicType = json.contains("MUSIC_VIDEO_TYPE_ATV") || 
+                           json.contains("MUSIC_VIDEO_TYPE_OMV") || 
+                           json.contains("MUSIC_PAGE_TYPE_TRACK") ||
+                           json.contains("MUSIC_PAGE_TYPE_ALBUM")
+        
+        if (hasMusicType) return true
+
+        // 2. Blacklist common non-music terms in title/artist
+        val title = (extractTitle(map) ?: "").lowercase()
+        val artist = (extractArtist(map) ?: "").lowercase()
+        val blacklist = listOf("telefilm", "vlog", "blog", "full movie", "episode", "drama", "documentary", "news")
+        
+        if (blacklist.any { title.contains(it) || artist.contains(it) }) return false
+
+        // 3. Optional: Duration check (Most songs are under 10 minutes)
+        // This is a heuristic; phonks/mixes might be longer, but telefilms are 30min+
+        val durationText = json.substringAfter("\"simpleText\":\"", "").substringBefore("\"", "")
+        if (durationText.contains(":") && !durationText.contains("::")) {
+            val parts = durationText.split(":")
+            if (parts.size >= 3) return false // More than 1 hour is likely not a song
+            val mins = parts[0].toIntOrNull() ?: 0
+            if (mins > 15 && !title.contains("mix") && !title.contains("phonk")) return false
+        }
+
+        // If it's in a music-specific list item renderer, it's likely music
+        return map.containsKey("musicResponsiveListItemRenderer") || 
+               map.containsKey("musicTwoRowItemRenderer")
     }
 
     private fun extractVideoId(map: Map<*, *>): String? {
@@ -242,7 +273,7 @@ object InnerTubeRepository {
 
     suspend fun browseCategory(browseId: String, params: String?): List<Track> {
         return try {
-            val response = InnerTubeClient.apiService.browse(BrowseRequest(InnerTubeClient.createMWebContext(), browseId, params), InnerTubeClient.USER_AGENT_MWEB)
+            val response = InnerTubeClient.apiService.browse(BrowseRequest(InnerTubeClient.createWebContext(), browseId, params), InnerTubeClient.USER_AGENT_WEB)
             val tracks = mutableListOf<Track>()
             parseGreedy(response, tracks)
             tracks.distinctBy { it.id }
@@ -251,12 +282,12 @@ object InnerTubeRepository {
 
     suspend fun getExploreCategories(): List<Category> {
         return try {
-            val request = BrowseRequest(context = InnerTubeClient.createMWebContext(), browseId = "FEmusic_explore")
-            val response = InnerTubeClient.apiService.browse(request, InnerTubeClient.USER_AGENT_MWEB)
+            val request = BrowseRequest(context = InnerTubeClient.createWebContext(), browseId = "FEmusic_explore")
+            val response = InnerTubeClient.apiService.browse(request, InnerTubeClient.USER_AGENT_WEB)
             val categories = mutableListOf<Category>()
             findCategories(convertToStd(response.contents), categories)
             if (categories.isEmpty()) {
-                 findCategories(convertToStd(InnerTubeClient.apiService.browse(BrowseRequest(context = InnerTubeClient.createMWebContext(), browseId = "FEmusic_moods_and_genres"), InnerTubeClient.USER_AGENT_MWEB).contents), categories)
+                 findCategories(convertToStd(InnerTubeClient.apiService.browse(BrowseRequest(context = InnerTubeClient.createWebContext(), browseId = "FEmusic_moods_and_genres"), InnerTubeClient.USER_AGENT_WEB).contents), categories)
             }
             categories.distinctBy { it.title }
         } catch (e: Exception) { emptyList() }

@@ -25,7 +25,7 @@ object InnerTubeClient {
 
     private val headerInterceptor = Interceptor { chain ->
         val original = chain.request()
-        val userAgent = original.header("User-Agent") ?: USER_AGENT_MWEB
+        val userAgent = original.header("User-Agent") ?: USER_AGENT_WEB
 
         val url = original.url.newBuilder()
             .addQueryParameter("key", ANDROID_KEY)
@@ -35,15 +35,15 @@ object InnerTubeClient {
             .url(url)
             .header("Content-Type", "application/json")
             .header("User-Agent", userAgent)
-            .header("Origin", "https://www.youtube.com")
-            .header("Referer", "https://www.youtube.com")
+            .header("Origin", "https://music.youtube.com")
+            .header("Referer", "https://music.youtube.com")
 
         chain.proceed(requestBuilder.method(original.method, original.body).build())
     }
 
     private val okHttpClient = OkHttpClient.Builder()
         .addInterceptor(headerInterceptor)
-        .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY })
+        .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.NONE })
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
@@ -60,7 +60,6 @@ object InnerTubeClient {
     fun setVisitorData(data: String) {
         try {
             visitorData = URLDecoder.decode(data, "UTF-8")
-            Log.d("InnerTubeClient", "Decoded VisitorData: $visitorData")
         } catch (e: Exception) {
             visitorData = data
         }

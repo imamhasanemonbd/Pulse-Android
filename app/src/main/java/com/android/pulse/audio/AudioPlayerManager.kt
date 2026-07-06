@@ -62,9 +62,8 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
         else database.likedSongDao().isLiked(track.id)
     }.stateIn(scope, SharingStarted.WhileSubscribed(5000), false)
 
-    val currentQueue: List<Track> get() = queue.toList()
-
-    private val queue = mutableListOf<Track>()
+    private val _queueList = MutableStateFlow<List<Track>>(emptyList())
+    val currentQueue: List<Track> get() = _queueList.value
 
     init {
         val sessionToken = SessionToken(context, ComponentName(context, MediaPlaybackService::class.java))
@@ -76,21 +75,26 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
                         Player.EVENT_MEDIA_ITEM_TRANSITION,
                         Player.EVENT_PLAYBACK_STATE_CHANGED,
                         Player.EVENT_PLAY_WHEN_READY_CHANGED,
-                        Player.EVENT_IS_PLAYING_CHANGED
+                        Player.EVENT_IS_PLAYING_CHANGED,
+                        Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED,
+                        Player.EVENT_REPEAT_MODE_CHANGED
                     )) {
+                    
+                    _isPlaying.value = player.isPlaying
+                    _shuffleMode.value = player.shuffleModeEnabled
+                    _repeatMode.value = player.repeatMode
+
                     val index = player.currentMediaItemIndex
-                    if (index in queue.indices) {
-                        val track = queue[index]
+                    if (index in _queueList.value.indices) {
+                        val track = _queueList.value[index]
                         if (_currentTrack.value?.id != track.id) {
                             _currentTrack.value = track
                         }
                     }
-                    _isPlaying.value = player.isPlaying
                 }
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                _isPlaying.value = isPlaying
                 if (isPlaying) startService()
             }
 
@@ -107,16 +111,15 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
 
             override fun onPlayerError(error: PlaybackException) {
                 val index = player.currentMediaItemIndex
-                if (index in queue.indices) {
+                if (index in _queueList.value.indices) {
                     scope.launch { loadTrackUriForIndex(index) }
                 }
             }
             
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val index = player.currentMediaItemIndex
-                if (index in queue.indices) {
-                    val track = queue[index]
-                    _currentTrack.value = track
+                if (index in _queueList.value.indices) {
+                    val track = _queueList.value[index]
                     saveToHistory(track)
                     
                     val currentUri = player.currentMediaItem?.localConfiguration?.uri.toString()
@@ -124,7 +127,11 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
                         scope.launch { loadTrackUriForIndex(index) }
                     }
                     
-                    if (index + 1 in queue.indices) {
+                    if (index >= _queueList.value.size - 2) {
+                        fetchAndAddRecommendations(track.id)
+                    }
+                    
+                    if (index + 1 in _queueList.value.indices) {
                         scope.launch { loadTrackUriForIndex(index + 1) }
                     }
                 }
@@ -153,30 +160,30 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
             _isLoading.value = true
             try {
                 startService()
-                queue.clear()
-                queue.addAll(tracks.ifEmpty { listOf(track) })
                 
-                val startIndex = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
-                _currentTrack.value = queue[startIndex]
+                // CRITICAL FIX: Ensure the queue provided (tracks) exactly matches what we tell ExoPlayer to play.
+                // If tracks is empty, it means we are playing a single track (e.g. from a search matched card).
+                val fullQueue = if (tracks.isNotEmpty()) {
+                    tracks.distinctBy { it.id }
+                } else {
+                    listOf(track)
+                }
+                
+                _queueList.value = fullQueue
+                
+                // Find index by ID, not by reference, for total reliability.
+                val startIndex = fullQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+                _currentTrack.value = fullQueue[startIndex]
 
-                // Map media items initially with placeholder, loadTrackUriForIndex will update them
-                val mediaItems = queue.map { item ->
-                    val metadata = MediaMetadata.Builder()
-                        .setTitle(item.title)
-                        .setArtist(item.artist)
-                        .setArtworkUri(Uri.parse(item.thumbnail ?: ""))
-                        .build()
-
-                    MediaItem.Builder()
-                        .setMediaId(item.id)
-                        .setUri("https://dummy.mp3")
-                        .setMediaMetadata(metadata)
-                        .build()
+                val mediaItems = fullQueue.map { item ->
+                    createMediaItem(item)
                 }
 
                 player.setMediaItems(mediaItems, startIndex, 0)
                 player.prepare()
+                
                 loadTrackUriForIndex(startIndex)
+                
                 player.play()
             } catch (e: Exception) {
                 android.util.Log.e("AudioPlayer", "Playback failed", e)
@@ -186,31 +193,63 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
         }
     }
 
+    private fun fetchAndAddRecommendations(videoId: String) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val homeData = InnerTubeRepository.getHomeData(relatedToVideoId = videoId)
+                val newTracks = homeData.quickPicks.filter { t -> 
+                    _queueList.value.none { it.id == t.id } 
+                }.take(10)
+                
+                if (newTracks.isNotEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        val currentQueue = _queueList.value
+                        _queueList.value = currentQueue + newTracks
+                        player.addMediaItems(newTracks.map { createMediaItem(it) })
+                        android.util.Log.d("AudioPlayer", "Auto-added ${newTracks.size} related tracks to queue.")
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AudioPlayer", "Failed to fetch recommendations", e)
+            }
+        }
+    }
+
+    private fun createMediaItem(track: Track): MediaItem {
+        val metadata = MediaMetadata.Builder()
+            .setTitle(track.title)
+            .setArtist(track.artist)
+            .setArtworkUri(Uri.parse(track.thumbnail ?: ""))
+            .build()
+
+        return MediaItem.Builder()
+            .setMediaId(track.id)
+            .setUri("https://dummy.mp3")
+            .setMediaMetadata(metadata)
+            .build()
+    }
+
     private suspend fun loadTrackUriForIndex(index: Int) {
-        if (index !in queue.indices) return
-        val track = queue[index]
+        if (index !in _queueList.value.indices) return
+        val track = _queueList.value[index]
         
-        // CHECK DATABASE FOR OFFLINE FILE
         val offlineSong = database.offlineSongDao().getAllOfflineSongs().first().find { it.id == track.id && it.isFinished }
         val localFile = offlineSong?.localPath?.let { File(it) }
         
         val uri = if (localFile != null && localFile.exists() && localFile.length() > 0) {
-            android.util.Log.d("AudioPlayer", "Verified OFFLINE File: ${localFile.absolutePath} (${localFile.length()} bytes)")
             Uri.fromFile(localFile)
         } else {
-            android.util.Log.d("AudioPlayer", "Offline file not found or invalid. Fetching ONLINE URL for: ${track.id}")
             InnerTubeRepository.getStreamUrl(track.id)?.let { Uri.parse(it) }
         }
 
         if (uri != null) {
             withContext(Dispatchers.Main) {
                 val currentItem = player.getMediaItemAt(index)
-                val updatedItem = currentItem.buildUpon().setUri(uri).build()
-                player.replaceMediaItem(index, updatedItem)
-                android.util.Log.d("AudioPlayer", "Successfully assigned URI to player: $uri")
+                if (currentItem.localConfiguration?.uri.toString() != uri.toString()) {
+                    val updatedItem = currentItem.buildUpon().setUri(uri).build()
+                    player.replaceMediaItem(index, updatedItem)
+                }
             }
-        } else {
-            android.util.Log.e("AudioPlayer", "Could not resolve ANY URI (Online or Offline) for ${track.id}")
         }
     }
 
@@ -235,10 +274,12 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
     fun skipNext() { if (player.hasNextMediaItem()) player.seekToNext() }
     fun skipPrevious() { if (player.hasPreviousMediaItem()) player.seekToPrevious() }
     fun seekTo(position: Long) { player.seekTo(position) }
+    
     fun toggleShuffle() { 
         player.shuffleModeEnabled = !player.shuffleModeEnabled
         _shuffleMode.value = player.shuffleModeEnabled
     }
+    
     fun cycleRepeatMode() {
         val nextMode = when (player.repeatMode) {
             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ONE
@@ -248,6 +289,7 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
         player.repeatMode = nextMode
         _repeatMode.value = nextMode
     }
+
     fun setVolume(vol: Float) {
         player.volume = vol
         _volume.value = vol

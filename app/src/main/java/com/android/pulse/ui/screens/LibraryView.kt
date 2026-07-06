@@ -7,13 +7,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -21,16 +21,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.android.pulse.audio.AudioPlayerManager
 import androidx.media3.common.util.UnstableApi
 
 @UnstableApi
 @Composable
 fun LibraryView(
     onLikedMusicClick: () -> Unit,
-    onOfflineMusicClick: () -> Unit,
-    onCachedMusicClick: () -> Unit,
-    onLocalMusicClick: () -> Unit,
+    onDownloadedClick: () -> Unit,
     onPlaylistsClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -59,41 +56,22 @@ fun LibraryView(
             ) {
                 item {
                     LibraryListItem(
-                        title = "Liked Music",
+                        title = "Favourite Songs",
                         icon = Icons.Default.Favorite,
-                        gradient = listOf(Color(0xFFE91E63), Color(0xFF9C27B0)),
                         onClick = onLikedMusicClick
                     )
                 }
                 item {
                     LibraryListItem(
-                        title = "Offline Music",
-                        icon = Icons.Default.DownloadForOffline,
-                        gradient = listOf(Color(0xFF009688), Color(0xFF4CAF50)),
-                        onClick = onOfflineMusicClick
-                    )
-                }
-                item {
-                    LibraryListItem(
-                        title = "Cached Music",
-                        icon = Icons.Default.Storage,
-                        gradient = listOf(Color(0xFF607D8B), Color(0xFF455A64)),
-                        onClick = onCachedMusicClick
-                    )
-                }
-                item {
-                    LibraryListItem(
-                        title = "Local Music",
-                        icon = Icons.Default.Folder,
-                        gradient = listOf(Color(0xFFFF9800), Color(0xFFFF5722)),
-                        onClick = onLocalMusicClick
+                        title = "Downloaded",
+                        icon = Icons.Default.DownloadDone,
+                        onClick = onDownloadedClick
                     )
                 }
                 item {
                     LibraryListItem(
                         title = "Playlists",
-                        icon = Icons.Default.PlaylistPlay,
-                        gradient = listOf(Color(0xFF2196F3), Color(0xFF03A9F4)),
+                        icon = Icons.AutoMirrored.Filled.PlaylistPlay,
                         onClick = onPlaylistsClick
                     )
                 }
@@ -107,7 +85,6 @@ fun LibraryListItem(
     title: String,
     icon: ImageVector? = null,
     imageUrl: String? = null,
-    gradient: List<Color>? = null,
     onClick: () -> Unit
 ) {
     Surface(
@@ -124,10 +101,7 @@ fun LibraryListItem(
                 modifier = Modifier
                     .size(56.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .then(
-                        if (gradient != null) Modifier.background(Brush.linearGradient(gradient))
-                        else Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
-                    ),
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
                 contentAlignment = Alignment.Center
             ) {
                 if (imageUrl != null) {
@@ -138,7 +112,8 @@ fun LibraryListItem(
                         contentScale = ContentScale.Crop
                     )
                 } else if (icon != null) {
-                    Icon(icon, null, modifier = Modifier.size(28.dp), tint = Color.White)
+                    // Using primary color dynamically from the app theme
+                    Icon(icon, null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.primary)
                 }
             }
             

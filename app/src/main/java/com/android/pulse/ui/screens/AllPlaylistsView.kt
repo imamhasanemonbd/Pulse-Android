@@ -32,6 +32,9 @@ fun AllPlaylistsView(
     val scope = rememberCoroutineScope()
     var showCreateDialog by remember { mutableStateOf(false) }
 
+    // Placeholder image for new playlists (gradient style)
+    val defaultCover = "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?q=80&w=256&h=256&auto=format&fit=crop"
+
     Box(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Scaffold(
             topBar = {
@@ -68,7 +71,7 @@ fun AllPlaylistsView(
                     items(playlists) { playlist ->
                         LibraryListItem(
                             title = playlist.name,
-                            imageUrl = playlist.coverUrl,
+                            imageUrl = playlist.coverUrl ?: defaultCover, // Fallback image
                             onClick = { onPlaylistClick(playlist) }
                         )
                     }
@@ -96,7 +99,12 @@ fun AllPlaylistsView(
                     onClick = {
                         if (playlistName.isNotBlank()) {
                             scope.launch {
-                                audioPlayerManager.database.playlistDao().insertPlaylist(PlaylistEntity(name = playlistName))
+                                audioPlayerManager.database.playlistDao().insertPlaylist(
+                                    PlaylistEntity(
+                                        name = playlistName,
+                                        coverUrl = defaultCover // Assign default cover on creation
+                                    )
+                                )
                             }
                         }
                         showCreateDialog = false

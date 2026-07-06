@@ -162,9 +162,7 @@ fun MainScreen(playerManager: AudioPlayerManager) {
                         )
                         NavItem.Library -> LibraryView(
                             onLikedMusicClick = { showLikedMusic = true },
-                            onOfflineMusicClick = { showOfflineMusic = true },
-                            onCachedMusicClick = { showCachedMusic = true },
-                            onLocalMusicClick = { showLocalMusic = true },
+                            onDownloadedClick = { showOfflineMusic = true },
                             onPlaylistsClick = { showAllPlaylists = true },
                             modifier = viewModifier
                         )
