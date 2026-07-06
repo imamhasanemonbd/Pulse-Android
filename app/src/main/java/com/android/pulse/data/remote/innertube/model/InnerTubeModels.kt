@@ -1,5 +1,7 @@
 package com.android.pulse.data.remote.innertube.model
 
+import com.android.pulse.data.model.Track
+
 data class InnerTubeContext(
     val client: InnerTubeClientInfo,
     val user: InnerTubeTubeUserInfo = InnerTubeTubeUserInfo()
@@ -30,8 +32,16 @@ data class SearchRequest(
 
 data class BrowseRequest(
     val context: InnerTubeContext,
-    val browseId: String,
+    val browseId: String? = null,
     val params: String? = null
+)
+
+data class NextRequest(
+    val context: InnerTubeContext,
+    val videoId: String? = null,
+    val playlistId: String? = null,
+    val params: String? = null,
+    val browseId: String? = null
 )
 
 data class Category(
@@ -39,6 +49,12 @@ data class Category(
     val browseId: String,
     val params: String? = null,
     val color: Long = 0xFF212121 // Default dark color
+)
+
+data class HomeData(
+    val quickPicks: List<Track> = emptyList(),
+    val speedDial: List<Track> = emptyList(),
+    val categories: List<Category> = emptyList()
 )
 
 /**

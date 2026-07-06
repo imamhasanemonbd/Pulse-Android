@@ -4,28 +4,21 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.android.pulse.data.model.Track
 
-@Entity(tableName = "history")
-data class HistoryEntity(
+@Entity(tableName = "offline_songs")
+data class OfflineSongEntity(
     @PrimaryKey val id: String,
     val title: String,
     val artist: String,
     val thumbnailUrl: String?,
     val duration: Int?,
-    val playedAt: Long = System.currentTimeMillis()
+    val localPath: String,
+    val downloadedAt: Long = System.currentTimeMillis()
 )
 
-fun HistoryEntity.toTrack() = Track(
+fun OfflineSongEntity.toTrack() = Track(
     id = id,
     title = title,
     artist = artist,
     thumbnail = thumbnailUrl,
-    duration = duration
-)
-
-fun Track.toHistoryEntity() = HistoryEntity(
-    id = id,
-    title = title,
-    artist = artist,
-    thumbnailUrl = thumbnail,
     duration = duration
 )

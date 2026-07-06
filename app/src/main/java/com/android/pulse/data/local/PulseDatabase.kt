@@ -6,9 +6,11 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.android.pulse.data.local.dao.HistoryDao
 import com.android.pulse.data.local.dao.LikedSongDao
+import com.android.pulse.data.local.dao.OfflineSongDao
 import com.android.pulse.data.local.dao.PlaylistDao
 import com.android.pulse.data.local.entity.HistoryEntity
 import com.android.pulse.data.local.entity.LikedSongEntity
+import com.android.pulse.data.local.entity.OfflineSongEntity
 import com.android.pulse.data.local.entity.PlaylistEntity
 import com.android.pulse.data.local.entity.PlaylistSongCrossRef
 
@@ -17,15 +19,17 @@ import com.android.pulse.data.local.entity.PlaylistSongCrossRef
         LikedSongEntity::class, 
         HistoryEntity::class, 
         PlaylistEntity::class, 
-        PlaylistSongCrossRef::class
+        PlaylistSongCrossRef::class,
+        OfflineSongEntity::class
     ], 
-    version = 5,
+    version = 7,
     exportSchema = false
 )
 abstract class PulseDatabase : RoomDatabase() {
     abstract fun likedSongDao(): LikedSongDao
     abstract fun historyDao(): HistoryDao
     abstract fun playlistDao(): PlaylistDao
+    abstract fun offlineSongDao(): OfflineSongDao
 
     companion object {
         @Volatile

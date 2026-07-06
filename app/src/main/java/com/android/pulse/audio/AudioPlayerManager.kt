@@ -75,6 +75,8 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
         else database.likedSongDao().isLiked(track.id)
     }.stateIn(scope, SharingStarted.WhileSubscribed(5000), false)
 
+    val currentQueue: List<Track> get() = queue.toList()
+
     private val queue = mutableListOf<Track>()
 
     init {
@@ -86,14 +88,42 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
         }, MoreExecutors.directExecutor())
 
         player.addListener(object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                // ROBUST SYNC: Ensure state is pushed on every relevant event
+                if (events.containsAny(
+                        Player.EVENT_MEDIA_ITEM_TRANSITION,
+                        Player.EVENT_PLAYBACK_STATE_CHANGED,
+                        Player.EVENT_PLAY_WHEN_READY_CHANGED,
+                        Player.EVENT_IS_PLAYING_CHANGED
+                    )) {
+                    val index = player.currentMediaItemIndex
+                    if (index in queue.indices) {
+                        val track = queue[index]
+                        if (_currentTrack.value != track) {
+                            _currentTrack.value = track
+                        }
+                    }
+                    _isPlaying.value = player.isPlaying
+                }
+            }
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _isPlaying.value = isPlaying
+                android.util.Log.d("AudioPlayer", "STATE: isPlaying=$isPlaying")
                 if (isPlaying) {
                     startService()
                 }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
+                val stateName = when(state) {
+                    Player.STATE_IDLE -> "IDLE"
+                    Player.STATE_BUFFERING -> "BUFFERING"
+                    Player.STATE_READY -> "READY"
+                    Player.STATE_ENDED -> "ENDED"
+                    else -> "UNKNOWN"
+                }
+                android.util.Log.d("AudioPlayer", "STATE: playbackState=$stateName")
                 _isLoading.value = state == Player.STATE_BUFFERING
                 if (state == Player.STATE_READY) {
                     _duration.value = player.duration.coerceAtLeast(0)
@@ -114,9 +144,11 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
             
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val index = player.currentMediaItemIndex
+                android.util.Log.d("AudioPlayer", "STATE: Transition index=$index, reason=$reason")
                 if (index in queue.indices) {
                     val track = queue[index]
                     _currentTrack.value = track
+                    android.util.Log.d("AudioPlayer", "STATE: currentTrack updated to ${track.title}")
                     saveToHistory(track)
                     
                     val currentUri = player.currentMediaItem?.localConfiguration?.uri.toString()
@@ -127,6 +159,8 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
                     if (index + 1 in queue.indices) {
                         loadTrackUriForIndex(index + 1)
                     }
+                } else {
+                    android.util.Log.w("AudioPlayer", "STATE: Transition index $index out of bounds")
                 }
             }
         })
@@ -136,7 +170,7 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
                 if (player.isPlaying) {
                     _currentTime.value = player.currentPosition
                 }
-                delay(1000)
+                delay(200) // Smoother updates for UI slider
             }
         }
     }
@@ -188,7 +222,6 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
                 loadTrackUriForIndex(startIndex)
                 
                 player.play()
-                saveToHistory(queue[startIndex])
             } catch (e: Exception) {
                 android.util.Log.e("AudioPlayer", "Playback failed", e)
             } finally {
@@ -221,7 +254,7 @@ class AudioPlayerManager(private val context: Context, val database: PulseDataba
 
     private fun saveToHistory(track: Track) {
         scope.launch(Dispatchers.IO) {
-            database.historyDao().insertHistoryEntry(track.toHistoryEntity())
+            database.historyDao().insertHistoryEntry(track.toHistoryEntity().copy(playedAt = System.currentTimeMillis()))
         }
     }
 

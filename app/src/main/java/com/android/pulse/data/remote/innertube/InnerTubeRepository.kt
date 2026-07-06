@@ -3,288 +3,266 @@ package com.android.pulse.data.remote.innertube
 import android.util.Log
 import com.android.pulse.data.model.Track
 import com.android.pulse.data.remote.innertube.model.*
-import com.google.gson.internal.LinkedTreeMap
+import com.google.gson.Gson
 
 /**
- * Singleton repository to manage network requests and parsing logic.
- * Uses consistent InnerTubeClient (Retrofit/OkHttp) to prevent memory leaks.
+ * Singleton repository with "Greedy" parsing strategy.
  */
 object InnerTubeRepository {
-    private const val TAG = "InnerTubeRepo"
+    private const val TAG = "PULSE_TAG"
+    private val gson = Gson()
 
     suspend fun getStreamUrl(videoId: String): String? {
         ensureSession()
-
-        // 1. Try ANDROID_VR (Most resilient to bot detection)
-        val vrResult = runCatching {
-            val request = PlayerRequest(
-                context = InnerTubeClient.createVrContext(),
-                videoId = videoId
-            )
-            val response = InnerTubeClient.apiService.player(
-                request, 
-                InnerTubeClient.USER_AGENT_VR
-            )
-            extractAudioUrl(response)
-        }
+        val contexts = listOf(
+            InnerTubeClient.createVrContext() to InnerTubeClient.USER_AGENT_VR,
+            InnerTubeClient.createTvContext() to InnerTubeClient.USER_AGENT_TV,
+            InnerTubeClient.createMWebContext() to InnerTubeClient.USER_AGENT_MWEB
+        )
         
-        vrResult.getOrNull()?.let { return it }
-        Log.w(TAG, "VR resolution failed: ${vrResult.exceptionOrNull()?.message}")
-
-        // 2. Try TVHTML5 (Stable fallback)
-        val tvResult = runCatching {
-            val request = PlayerRequest(
-                context = InnerTubeClient.createTvContext(),
-                videoId = videoId
-            )
-            val response = InnerTubeClient.apiService.player(
-                request, 
-                InnerTubeClient.USER_AGENT_TV
-            )
-            extractAudioUrl(response)
+        for ((ctx, ua) in contexts) {
+            val result = runCatching {
+                val response = InnerTubeClient.apiService.player(PlayerRequest(ctx, videoId), ua)
+                extractAudioUrl(response)
+            }
+            result.getOrNull()?.let { return it }
         }
-        
-        tvResult.getOrNull()?.let { return it }
-        Log.w(TAG, "TV resolution failed: ${tvResult.exceptionOrNull()?.message}")
-
-        // 3. Fallback to standard Mobile Web
-        val fallbackResult = runCatching {
-            val fallbackRequest = PlayerRequest(
-                context = InnerTubeClient.createMWebContext(),
-                videoId = videoId
-            )
-            val response = InnerTubeClient.apiService.player(
-                fallbackRequest,
-                InnerTubeClient.USER_AGENT_MWEB
-            )
-            extractAudioUrl(response)
-        }
-        
-        return fallbackResult.getOrNull()
+        return null
     }
 
     private suspend fun ensureSession() {
         if (InnerTubeClient.getVisitorData() != null) return
-        
         runCatching {
-            val request = BrowseRequest(
-                context = InnerTubeClient.createMWebContext(),
-                browseId = "FEwhat_to_watch"
-            )
-            val response = InnerTubeClient.apiService.browse(request)
+            val request = BrowseRequest(context = InnerTubeClient.createMWebContext(), browseId = "FEmusic_home")
+            val response = InnerTubeClient.apiService.browse(request, InnerTubeClient.USER_AGENT_MWEB)
             val visitorData = response.responseContext?.visitorData
             if (visitorData != null) {
                 InnerTubeClient.setVisitorData(visitorData)
             }
-        }.onFailure {
-            Log.e(TAG, "Failed to establish session: ${it.message}")
         }
     }
 
     private fun extractAudioUrl(response: InnerTubeResponse): String? {
-        if (response.playabilityStatus?.status != "OK") {
-            Log.w(TAG, "Playability restriction: ${response.playabilityStatus?.status}")
-            return null
-        }
-        
+        if (response.playabilityStatus?.status != "OK") return null
         val formats = response.streamingData?.adaptiveFormats ?: response.streamingData?.formats
         return formats
-            ?.filter { it.mimeType?.startsWith("audio/") == true }
-            ?.filter { it.url != null }
+            ?.filter { it.mimeType?.startsWith("audio/") == true && it.url != null }
             ?.maxByOrNull { it.bitrate ?: 0 }
             ?.url
     }
 
-    suspend fun searchMusic(query: String): List<Track> {
+    suspend fun searchMusic(query: String, params: String? = null): List<Track> {
+        Log.e(TAG, "GREEDY: searching '$query'")
         return try {
-            val request = SearchRequest(
-                context = InnerTubeClient.createMWebContext(),
-                query = query
-            )
-
-            val response = InnerTubeClient.apiService.search(request)
+            val request = SearchRequest(context = InnerTubeClient.createMWebContext(), query = query, params = params)
+            val response = InnerTubeClient.apiService.search(request, InnerTubeClient.USER_AGENT_MWEB)
             response.responseContext?.visitorData?.let { InnerTubeClient.setVisitorData(it) }
-
-            val tracks = mutableListOf<Track>()
-            findTracks(response.contents, tracks)
-            findTracks(response.onResponseReceivedCommands, tracks)
             
-            Log.d(TAG, "Search Found ${tracks.size} tracks.")
+            val tracks = mutableListOf<Track>()
+            parseGreedy(response, tracks)
+            
+            Log.e(TAG, "GREEDY: found ${tracks.size} tracks")
             tracks.distinctBy { it.id }
         } catch (e: Exception) {
-            Log.e(TAG, "Error searching music: ${e.message}")
+            Log.e(TAG, "Search fatal", e)
             emptyList()
         }
     }
 
-    suspend fun getExploreCategories(): List<Category> {
+    suspend fun getTrending(): List<Track> {
+        return searchMusic("Trending Music")
+    }
+
+    suspend fun getHomeData(categoryParams: String? = null, relatedToVideoId: String? = null): HomeData {
+        Log.e(TAG, "GREEDY: getHomeData(related=$relatedToVideoId)")
         return try {
-            val request = BrowseRequest(
-                context = InnerTubeClient.createWebContext(),
-                browseId = "FEmusic_explore"
-            )
-            val response = InnerTubeClient.apiService.browse(
-                request,
-                InnerTubeClient.USER_AGENT_WEB
-            )
+            val allTracks = mutableListOf<Track>()
             val categories = mutableListOf<Category>()
-            findCategories(response.contents, categories)
+            
+            val response = if (relatedToVideoId != null) {
+                InnerTubeClient.apiService.next(NextRequest(context = InnerTubeClient.createMWebContext(), videoId = relatedToVideoId), InnerTubeClient.USER_AGENT_MWEB)
+            } else {
+                InnerTubeClient.apiService.browse(BrowseRequest(context = InnerTubeClient.createMWebContext(), browseId = "FEmusic_home", params = categoryParams), InnerTubeClient.USER_AGENT_MWEB)
+            }
+
+            parseGreedy(response, allTracks)
+            findCategories(convertToStd(response.contents), categories)
             
             if (categories.isEmpty()) {
-                val moodsRequest = BrowseRequest(
-                    context = InnerTubeClient.createWebContext(),
-                    browseId = "FEmusic_moods_and_genres"
-                )
-                val moodsResponse = InnerTubeClient.apiService.browse(
-                    moodsRequest,
-                    InnerTubeClient.USER_AGENT_WEB
-                )
-                findCategories(moodsResponse.contents, categories)
+                categories.addAll(listOf(
+                    Category("Energize", "FEmusic_home", "ggMPOg1uX2V4Y2x1c2l2ZV9y"),
+                    Category("Relax", "FEmusic_home", "ggMPOg1vX2V4Y2x1c2l2ZV9y"),
+                    Category("Feel good", "FEmusic_home", "ggMPOg1wX2V4Y2x1c2l2ZV9y"),
+                    Category("Party", "FEmusic_home", "ggMPOg1yX2V4Y2x1c2l2ZV9y")
+                ))
             }
-
-            categories.distinctBy { it.title }
+            
+            if (allTracks.isEmpty()) {
+                Log.e(TAG, "GREEDY: Home yielded 0 tracks, using trending fallback")
+                allTracks.addAll(getTrending())
+            }
+            
+            val distinct = allTracks.filter { it.id != relatedToVideoId }.distinctBy { it.id }
+            val speedDial = distinct.take(12)
+            val quickPicks = distinct.drop(12).take(30).ifEmpty { distinct.shuffled().take(20) }
+            
+            Log.e(TAG, "GREEDY: Home finished. SpeedDial=${speedDial.size}, QuickPicks=${quickPicks.size}")
+            HomeData(quickPicks, speedDial, categories.distinctBy { it.title })
         } catch (e: Exception) {
-            Log.e(TAG, "Error fetching categories: ${e.message}")
-            emptyList()
+            Log.e(TAG, "Home fatal", e)
+            HomeData(getTrending(), getTrending().shuffled(), emptyList())
         }
     }
 
-    suspend fun browseCategory(browseId: String, params: String?): List<Track> {
-        return try {
-            val request = BrowseRequest(
-                context = InnerTubeClient.createWebContext(),
-                browseId = browseId,
-                params = params
-            )
-            val response = InnerTubeClient.apiService.browse(
-                request,
-                InnerTubeClient.USER_AGENT_WEB
-            )
-            val tracks = mutableListOf<Track>()
-            findTracks(response.contents, tracks)
-            tracks.distinctBy { it.id }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error browsing category: ${e.message}")
-            emptyList()
+    /**
+     * GREEDY PARSER: Traverses the response tree looking for any map that contains a "videoId".
+     * Once a videoId is found, it attempts to extract title/artist/thumb from THAT SAME map.
+     */
+    private fun parseGreedy(response: InnerTubeResponse, out: MutableList<Track>) {
+        val root = convertToStd(response.contents)
+        val commands = convertToStd(response.onResponseReceivedCommands)
+        
+        deepScan(root, out)
+        deepScan(commands, out)
+        
+        if (out.isEmpty()) {
+            val json = gson.toJson(response)
+            Regex("\"videoId\":\"([a-zA-Z0-9_-]{11})\"").findAll(json).map { it.groupValues[1] }.distinct().take(20).forEach { id ->
+                out.add(Track(id, "Track $id", "Unknown Artist", "https://i.ytimg.com/vi/$id/hqdefault.jpg", 0))
+            }
         }
     }
 
-    private fun findTracks(node: Any?, tracks: MutableList<Track>) {
+    private fun deepScan(node: Any?, out: MutableList<Track>) {
         if (node == null) return
-        when (node) {
-            is List<*> -> {
-                node.forEach { findTracks(it, tracks) }
-            }
-            is LinkedTreeMap<*, *> -> {
-                val videoRenderer = (node["videoRenderer"] as? LinkedTreeMap<*, *>)
-                    ?: (node["videoWithContextRenderer"] as? LinkedTreeMap<*, *>)
-                    ?: (node["playlistVideoRenderer"] as? LinkedTreeMap<*, *>)
-                
-                if (videoRenderer != null) {
-                    val videoId = videoRenderer["videoId"] as? String
-                    val title = parseRuns(videoRenderer["title"]) ?: parseRuns(videoRenderer["headline"])
-                    val artist = parseRuns(videoRenderer["longBylineText"]) ?: parseRuns(videoRenderer["shortBylineText"]) ?: parseRuns(videoRenderer["ownerText"])
-                    val thumbnailObj = videoRenderer["thumbnail"] as? LinkedTreeMap<*, *>
-                    val thumbnails = thumbnailObj?.get("thumbnails") as? List<*>
-                    val thumbnailUrl = (thumbnails?.lastOrNull() as? LinkedTreeMap<*, *>)?.get("url") as? String
-
-                    if (videoId != null && title != null) {
-                        tracks.add(Track(videoId, title, artist ?: "Unknown Artist", thumbnailUrl, 0))
-                    }
-                } else {
-                    val responsiveRenderer = node["musicResponsiveListItemRenderer"] as? LinkedTreeMap<*, *>
-                    if (responsiveRenderer != null) {
-                        val flexColumns = responsiveRenderer["flexColumns"] as? List<*>
-                        val firstColumn = (flexColumns?.getOrNull(0) as? LinkedTreeMap<String, Any>)?.get("musicResponsiveListItemFlexColumnRenderer") as? LinkedTreeMap<String, Any>
-                        val secondColumn = (flexColumns?.getOrNull(1) as? LinkedTreeMap<String, Any>)?.get("musicResponsiveListItemFlexColumnRenderer") as? LinkedTreeMap<String, Any>
-                        
-                        val title = parseRuns(firstColumn?.get("text"))
-                        val artist = parseRuns(secondColumn?.get("text"))
-                        
-                        val thumbnailObj = responsiveRenderer["thumbnail"] as? LinkedTreeMap<String, Any>
-                        val musicThumbnailRenderer = thumbnailObj?.get("musicThumbnailRenderer") as? LinkedTreeMap<String, Any>
-                        val thumbnails = musicThumbnailRenderer?.get("thumbnail") as? LinkedTreeMap<String, Any>
-                        val thumbnailList = thumbnails?.get("thumbnails") as? List<*>
-                        val thumbnailUrl = (thumbnailList?.lastOrNull() as? LinkedTreeMap<String, Any>)?.get("url") as? String
-                        
-                        var navigationEndpoint = responsiveRenderer["navigationEndpoint"] as? LinkedTreeMap<String, Any>
-                        if (navigationEndpoint == null) {
-                            val overlay = responsiveRenderer["overlay"] as? LinkedTreeMap<String, Any>
-                            val musicItemThumbnailOverlayRenderer = overlay?.get("musicItemThumbnailOverlayRenderer") as? LinkedTreeMap<String, Any>
-                            val content = musicItemThumbnailOverlayRenderer?.get("content") as? LinkedTreeMap<String, Any>
-                            val musicPlayButtonRenderer = content?.get("musicPlayButtonRenderer") as? LinkedTreeMap<String, Any>
-                            navigationEndpoint = musicPlayButtonRenderer?.get("playNavigationEndpoint") as? LinkedTreeMap<String, Any>
-                        }
-                        
-                        val watchEndpoint = navigationEndpoint?.get("watchEndpoint") as? LinkedTreeMap<String, Any>
-                        val videoId = watchEndpoint?.get("videoId") as? String
-
-                        if (videoId != null && title != null) {
-                            tracks.add(Track(videoId, title, artist ?: "Unknown Artist", thumbnailUrl, 0))
-                        }
-                    } else {
-                        val twoRowRenderer = node["musicTwoRowItemRenderer"] as? LinkedTreeMap<String, Any>
-                        if (twoRowRenderer != null) {
-                            val title = parseRuns(twoRowRenderer["title"])
-                            val artist = parseRuns(twoRowRenderer["subtitle"])
-                            
-                            val thumbnailObj = twoRowRenderer["thumbnailRenderer"] as? LinkedTreeMap<String, Any>
-                            val musicThumbnailRenderer = thumbnailObj?.get("musicThumbnailRenderer") as? LinkedTreeMap<String, Any>
-                            val thumbnails = musicThumbnailRenderer?.get("thumbnail") as? LinkedTreeMap<String, Any>
-                            val thumbnailList = thumbnails?.get("thumbnails") as? List<*>
-                            val thumbnailUrl = (thumbnailList?.lastOrNull() as? LinkedTreeMap<String, Any>)?.get("url") as? String
-                            
-                            val navigationEndpoint = twoRowRenderer["navigationEndpoint"] as? LinkedTreeMap<String, Any>
-                            val watchEndpoint = navigationEndpoint?.get("watchEndpoint") as? LinkedTreeMap<String, Any>
-                            val videoId = watchEndpoint?.get("videoId") as? String
-
-                            if (videoId != null && title != null) {
-                                tracks.add(Track(videoId, title, artist ?: "Unknown Artist", thumbnailUrl, 0))
-                            }
-                        }
-                        // Use explicit casting to avoid potential iterator issues
-                        (node as? Map<*, *>)?.values?.forEach { findTracks(it, tracks) }
+        if (node is List<*>) {
+            node.forEach { deepScan(it, out) }
+        } else if (node is Map<*, *>) {
+            val vid = extractVideoId(node)
+            if (vid != null) {
+                val title = extractTitle(node)
+                if (title != null) {
+                    val track = Track(
+                        vid, 
+                        title, 
+                        extractArtist(node) ?: "Unknown Artist", 
+                        extractThumbnail(node) ?: "https://i.ytimg.com/vi/$vid/hqdefault.jpg", 
+                        0
+                    )
+                    if (out.none { it.id == vid }) {
+                        out.add(track)
+                        Log.d(TAG, "GREEDY PARSED: ${track.title} ($vid)")
                     }
                 }
             }
+            node.values.forEach { deepScan(it, out) }
         }
+    }
+
+    private fun extractVideoId(map: Map<*, *>): String? {
+        (map["videoId"] as? String)?.let { return it }
+        (map["playlistItemData"] as? Map<*, *>)?.get("videoId")?.toString()?.let { return it }
+        
+        val nav = (map["navigationEndpoint"] as? Map<*, *>) ?: (map["serviceEndpoint"] as? Map<*, *>)
+        (nav?.get("watchEndpoint") as? Map<*, *>)?.get("videoId")?.toString()?.let { return it }
+        (nav?.get("watchPlaylistEndpoint") as? Map<*, *>)?.get("videoId")?.toString()?.let { return it }
+        
+        val overlay = (map["overlay"] as? Map<*, *>)?.get("musicItemThumbnailOverlayRenderer") as? Map<*, *>
+        val playBtn = overlay?.get("content")?.let { (it as? Map<*, *>)?.get("musicPlayButtonRenderer") as? Map<*, *> }
+        (playBtn?.get("playNavigationEndpoint") as? Map<*, *>)?.get("watchEndpoint")?.let { (it as? Map<*, *>)?.get("videoId")?.toString()?.let { vid -> return vid } }
+
+        return null
+    }
+
+    private fun extractTitle(map: Map<*, *>): String? {
+        (map["flexColumns"] as? List<*>)?.let { flex ->
+            flex.firstOrNull()?.let { col ->
+                val r = (col as? Map<*, *>)?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
+                parseRuns(r?.get("text"))?.let { return it }
+            }
+        }
+        return parseRuns(map["title"]) ?: parseRuns(map["headline"]) ?: parseRuns(map["text"]) ?: (map["title"] as? String)
+    }
+
+    private fun extractArtist(map: Map<*, *>): String? {
+        (map["flexColumns"] as? List<*>)?.let { flex ->
+            if (flex.size > 1) {
+                for (i in 1 until flex.size) {
+                    val r = (flex[i] as? Map<*, *>)?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
+                    val t = parseRuns(r?.get("text"))
+                    if (t != null && !t.contains("views", true) && !t.contains("plays", true) && !t.any { it.isDigit() }) return t
+                }
+            }
+        }
+        return parseRuns(map["longBylineText"]) ?: parseRuns(map["shortBylineText"]) ?: parseRuns(map["subtitle"]) ?: parseRuns(map["bylineText"])
+    }
+
+    private fun extractThumbnail(map: Map<*, *>): String? {
+        val node = (map["thumbnail"] as? Map<*, *>) ?: (map["thumbnailRenderer"] as? Map<*, *>)
+        val nested = (node?.get("musicThumbnailRenderer") as? Map<*, *>) ?: node
+        val list = (nested?.get("thumbnail") as? Map<*, *>)?.get("thumbnails") as? List<*> ?: nested?.get("thumbnails") as? List<*>
+        return (list?.lastOrNull() as? Map<*, *>)?.get("url") as? String
     }
 
     private fun findCategories(node: Any?, categories: MutableList<Category>) {
         if (node == null) return
-        when (node) {
-            is List<*> -> {
-                node.forEach { findCategories(it, categories) }
+        if (node is List<*>) {
+            node.forEach { findCategories(it, categories) }
+        } else if (node is Map<*, *>) {
+            val button = node["musicNavigationButtonRenderer"] as? Map<*, *>
+            if (button != null) {
+                val title = parseRuns(button["buttonText"])
+                val id = (button["clickCommand"] as? Map<*, *>)?.let { (it["browseEndpoint"] as? Map<*, *>)?.get("browseId") as? String }
+                if (title != null && id != null) categories.add(Category(title, id))
             }
-            is LinkedTreeMap<*, *> -> {
-                val buttonRenderer = node["musicNavigationButtonRenderer"] as? LinkedTreeMap<*, *>
-                if (buttonRenderer != null) {
-                    val title = parseRuns(buttonRenderer["buttonText"])
-                    val clickCommand = buttonRenderer["clickCommand"] as? LinkedTreeMap<*, *>
-                    val browseEndpoint = clickCommand?.get("browseEndpoint") as? LinkedTreeMap<*, *>
-                    val browseId = browseEndpoint?.get("browseId") as? String
-                    val params = browseEndpoint?.get("params") as? String
-                    
-                    val solid = buttonRenderer["solid"] as? LinkedTreeMap<*, *>
-                    val color = (solid?.get("leftIconColor") as? Double)?.toLong() 
-                        ?: (solid?.get("leftStripeColor") as? Double)?.toLong()
-                        ?: 0xFF212121
-
-                    if (title != null && browseId != null) {
-                        categories.add(Category(title, browseId, params, color))
-                    }
-                } else {
-                    node.values.forEach { findCategories(it, categories) }
-                }
-            }
+            node.values.forEach { findCategories(it, categories) }
         }
     }
 
     private fun parseRuns(node: Any?): String? {
         if (node == null) return null
         if (node is String) return node
-        val runs = (node as? LinkedTreeMap<*, *>)?.get("runs") as? List<*>
-            ?: (node as? LinkedTreeMap<*, *>)?.get("simpleText")?.let { listOf(LinkedTreeMap<String, Any>().apply { put("text", it) }) }
-        return runs?.mapNotNull { (it as? LinkedTreeMap<*, *>)?.get("text") as? String }?.joinToString("")
+        val map = node as? Map<*, *> ?: return null
+        val runs = map["runs"] as? List<*> ?: map["simpleText"]?.let { listOf(mapOf("text" to it)) }
+        return runs?.mapNotNull { (it as? Map<*, *>)?.get("text") as? String }?.joinToString("")
+    }
+
+    private fun convertToStd(obj: Any?): Any? {
+        if (obj == null) return null
+        if (obj is List<*>) return obj.map { convertToStd(it) }
+        if (obj is Map<*, *>) {
+            val map = mutableMapOf<String, Any?>()
+            for (entry in obj) {
+                map[entry.key.toString()] = convertToStd(entry.value)
+            }
+            return map
+        }
+        return obj
+    }
+
+    suspend fun browseCategory(browseId: String, params: String?): List<Track> {
+        return try {
+            val response = InnerTubeClient.apiService.browse(BrowseRequest(InnerTubeClient.createMWebContext(), browseId, params), InnerTubeClient.USER_AGENT_MWEB)
+            val tracks = mutableListOf<Track>()
+            parseGreedy(response, tracks)
+            tracks.distinctBy { it.id }
+        } catch (e: Exception) { emptyList() }
+    }
+
+    suspend fun getExploreCategories(): List<Category> {
+        return try {
+            val request = BrowseRequest(context = InnerTubeClient.createMWebContext(), browseId = "FEmusic_explore")
+            val response = InnerTubeClient.apiService.browse(request, InnerTubeClient.USER_AGENT_MWEB)
+            val categories = mutableListOf<Category>()
+            findCategories(convertToStd(response.contents), categories)
+            if (categories.isEmpty()) {
+                 findCategories(convertToStd(InnerTubeClient.apiService.browse(BrowseRequest(context = InnerTubeClient.createMWebContext(), browseId = "FEmusic_moods_and_genres"), InnerTubeClient.USER_AGENT_MWEB).contents), categories)
+            }
+            categories.distinctBy { it.title }
+        } catch (e: Exception) { emptyList() }
+    }
+
+    suspend fun getLyrics(trackId: String): String? {
+        return null
     }
 }

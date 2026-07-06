@@ -4,13 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -18,28 +15,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.android.pulse.audio.AudioPlayerManager
-import com.android.pulse.data.local.entity.PlaylistEntity
-import kotlinx.coroutines.launch
 import androidx.media3.common.util.UnstableApi
 
 @UnstableApi
 @Composable
 fun LibraryView(
-    audioPlayerManager: AudioPlayerManager, 
-    onLikedSongsClick: () -> Unit,
-    onPlaylistClick: (PlaylistEntity) -> Unit,
+    onLikedMusicClick: () -> Unit,
+    onOfflineMusicClick: () -> Unit,
+    onCachedMusicClick: () -> Unit,
+    onLocalMusicClick: () -> Unit,
+    onPlaylistsClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val playlists by audioPlayerManager.database.playlistDao().getAllPlaylists().collectAsState(initial = emptyList())
-    val scope = rememberCoroutineScope()
-    var showCreateDialog by remember { mutableStateOf(false) }
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -61,53 +55,57 @@ fun LibraryView(
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 100.dp),
-                verticalArrangement = Arrangement.spacedBy(0.dp) // Gapless alignment for list items
+                contentPadding = PaddingValues(bottom = 12.dp)
             ) {
-                // Liked Songs Item
                 item {
                     LibraryListItem(
-                        title = "Liked Songs",
+                        title = "Liked Music",
                         icon = Icons.Default.Favorite,
-                        gradient = listOf(
-                            MaterialTheme.colorScheme.primary,
-                            MaterialTheme.colorScheme.secondary
-                        ),
-                        onClick = onLikedSongsClick
+                        gradient = listOf(Color(0xFFE91E63), Color(0xFF9C27B0)),
+                        onClick = onLikedMusicClick
                     )
                 }
-
-                // Playlists - Unified alignment
-                items(playlists) { playlist ->
+                item {
                     LibraryListItem(
-                        title = playlist.name,
-                        imageUrl = playlist.coverUrl,
-                        onClick = { onPlaylistClick(playlist) }
+                        title = "Offline Music",
+                        icon = Icons.Default.DownloadForOffline,
+                        gradient = listOf(Color(0xFF009688), Color(0xFF4CAF50)),
+                        onClick = onOfflineMusicClick
+                    )
+                }
+                item {
+                    LibraryListItem(
+                        title = "Cached Music",
+                        icon = Icons.Default.Storage,
+                        gradient = listOf(Color(0xFF607D8B), Color(0xFF455A64)),
+                        onClick = onCachedMusicClick
+                    )
+                }
+                item {
+                    LibraryListItem(
+                        title = "Local Music",
+                        icon = Icons.Default.Folder,
+                        gradient = listOf(Color(0xFFFF9800), Color(0xFFFF5722)),
+                        onClick = onLocalMusicClick
+                    )
+                }
+                item {
+                    LibraryListItem(
+                        title = "Playlists",
+                        icon = Icons.Default.PlaylistPlay,
+                        gradient = listOf(Color(0xFF2196F3), Color(0xFF03A9F4)),
+                        onClick = onPlaylistsClick
                     )
                 }
             }
         }
-
-        ExtendedFloatingActionButton(
-            onClick = { showCreateDialog = true },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(16.dp),
-            shape = MaterialTheme.shapes.large, // Explicit M3 Large (16dp)
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            icon = { Icon(Icons.Default.Add, null) },
-            text = { Text("New Playlist") }
-        )
     }
-
-    // Dialog remains standard...
 }
 
 @Composable
 fun LibraryListItem(
     title: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    icon: ImageVector? = null,
     imageUrl: String? = null,
     gradient: List<Color>? = null,
     onClick: () -> Unit
@@ -119,15 +117,13 @@ fun LibraryListItem(
         color = Color.Transparent
     ) {
         Row(
-            modifier = Modifier
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Standardized Art Thumbnail / Placeholder
             Box(
                 modifier = Modifier
-                    .size(64.dp)
-                    .clip(MaterialTheme.shapes.medium)
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(12.dp))
                     .then(
                         if (gradient != null) Modifier.background(Brush.linearGradient(gradient))
                         else Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
@@ -142,15 +138,7 @@ fun LibraryListItem(
                         contentScale = ContentScale.Crop
                     )
                 } else if (icon != null) {
-                    Icon(icon, null, modifier = Modifier.size(32.dp), tint = Color.White)
-                } else {
-                    // Default Note Placeholder
-                    Icon(
-                        Icons.Default.MusicNote, 
-                        null, 
-                        modifier = Modifier.size(32.dp), 
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Icon(icon, null, modifier = Modifier.size(28.dp), tint = Color.White)
                 }
             }
             
@@ -158,7 +146,7 @@ fun LibraryListItem(
             
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,

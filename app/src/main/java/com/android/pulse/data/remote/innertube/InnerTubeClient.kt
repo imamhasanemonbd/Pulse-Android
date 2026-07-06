@@ -8,6 +8,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.net.URLDecoder
+import java.util.concurrent.TimeUnit
 
 object InnerTubeClient {
     private const val BASE_URL = "https://www.youtube.com/"
@@ -17,6 +18,7 @@ object InnerTubeClient {
     const val USER_AGENT_VR = "com.google.android.apps.youtube.vr.oculus/1.50.21 (Linux; U; Android 12; en_US; Quest 2) Build/SQ3A.220605.009.A1"
     const val USER_AGENT_TV = "Mozilla/5.0 (Chromecast; Google TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     const val USER_AGENT_WEB = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    const val USER_AGENT_ANDROID = "com.google.android.youtube/19.07.35 (Linux; U; Android 14; en_US; Pixel 7) gzip"
 
     @Volatile
     private var visitorData: String? = null
@@ -42,6 +44,8 @@ object InnerTubeClient {
     private val okHttpClient = OkHttpClient.Builder()
         .addInterceptor(headerInterceptor)
         .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY })
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
     val apiService: InnerTubeApiService by lazy {
@@ -87,6 +91,17 @@ object InnerTubeClient {
             clientName = "MWEB",
             clientVersion = "2.20240301.01.00",
             platform = "MOBILE",
+            visitorData = visitorData
+        )
+    )
+
+    fun createAndroidContext() = InnerTubeContext(
+        client = InnerTubeClientInfo(
+            clientName = "ANDROID",
+            clientVersion = "19.07.35",
+            hl = "en",
+            gl = "US",
+            androidSdkVersion = 34,
             visitorData = visitorData
         )
     )

@@ -21,59 +21,65 @@ import androidx.media3.common.util.UnstableApi
 @OptIn(ExperimentalMaterial3Api::class)
 @UnstableApi
 @Composable
-fun HistoryView(playerManager: AudioPlayerManager, onBack: () -> Unit) {
+fun HistoryView(
+    playerManager: AudioPlayerManager, 
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val history by playerManager.database.historyDao().getRecentHistory().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Playback History", style = MaterialTheme.typography.titleLarge) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    if (history.isNotEmpty()) {
-                        IconButton(onClick = {
-                            scope.launch {
-                                playerManager.database.historyDao().clearHistory()
-                            }
-                        }) {
-                            Icon(Icons.Default.DeleteSweep, contentDescription = "Clear All")
+    Box(modifier = modifier) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("Playback History", style = MaterialTheme.typography.titleLarge) },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
-                )
-            )
-        }
-    ) { innerPadding ->
-        if (history.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "Your history is empty",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyLarge
+                    },
+                    actions = {
+                        if (history.isNotEmpty()) {
+                            IconButton(onClick = {
+                                scope.launch {
+                                    playerManager.database.historyDao().clearHistory()
+                                }
+                            }) {
+                                Icon(Icons.Default.DeleteSweep, contentDescription = "Clear All")
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background
+                    )
                 )
             }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
-                items(history) { entity ->
-                    val track = entity.toTrack()
-                    TrackItem(track) {
-                        playerManager.playTrack(track, history.map { it.toTrack() })
+        ) { innerPadding ->
+            if (history.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Your history is empty",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                ) {
+                    items(history) { entity ->
+                        val track = entity.toTrack()
+                        TrackItem(track) {
+                            playerManager.playTrack(track, history.map { it.toTrack() })
+                        }
                     }
                 }
             }

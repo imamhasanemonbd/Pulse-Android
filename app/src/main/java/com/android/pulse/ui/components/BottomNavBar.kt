@@ -5,10 +5,12 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 
 sealed class NavItem(val route: String, val icon: ImageVector, val label: String) {
     object Home : NavItem("home", Icons.Default.Home, "Home")
     object Explore : NavItem("explore", Icons.Default.Explore, "Explore")
+    object Search : NavItem("search", Icons.Default.Search, "Search")
     object Library : NavItem("library", Icons.Default.LibraryMusic, "Library")
     object Settings : NavItem("settings", Icons.Default.Settings, "Settings")
     object LikedSongs : NavItem("liked_songs", Icons.Default.Favorite, "Liked")
@@ -18,15 +20,21 @@ sealed class NavItem(val route: String, val icon: ImageVector, val label: String
 @Composable
 fun BottomNavBar(selectedRoute: String, onItemClick: (String) -> Unit) {
     NavigationBar(
-        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+        tonalElevation = 0.dp
     ) {
-        val items = listOf(NavItem.Home, NavItem.Explore, NavItem.Library, NavItem.Settings)
+        val items = listOf(NavItem.Home, NavItem.Library, NavItem.Settings)
         items.forEach { item ->
             NavigationBarItem(
                 icon = { Icon(item.icon, contentDescription = item.label) },
                 label = { Text(item.label) },
                 selected = selectedRoute == item.route,
-                onClick = { onItemClick(item.route) }
+                onClick = { onItemClick(item.route) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                    indicatorColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                )
             )
         }
     }

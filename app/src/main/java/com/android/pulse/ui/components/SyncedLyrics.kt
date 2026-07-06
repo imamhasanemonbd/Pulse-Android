@@ -18,8 +18,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.android.pulse.data.remote.RetrofitClient
-import kotlinx.coroutines.launch
+import com.android.pulse.data.remote.innertube.InnerTubeRepository
 
 @Composable
 fun SyncedLyrics(trackId: String, currentTimeMs: Long, durationMs: Long) {
@@ -30,8 +29,7 @@ fun SyncedLyrics(trackId: String, currentTimeMs: Long, durationMs: Long) {
     LaunchedEffect(trackId) {
         isLoading = true
         try {
-            val response = RetrofitClient.pulseApiService.getLyrics(trackId)
-            lyricsText = response.lyrics
+            lyricsText = InnerTubeRepository.getLyrics(trackId) ?: "Lyrics not available."
         } catch (e: Exception) {
             lyricsText = "Lyrics not available."
         } finally {

@@ -29,4 +29,10 @@ interface InnerTubeApiService {
         @Body request: BrowseRequest,
         @Header("User-Agent") userAgent: String = InnerTubeClient.USER_AGENT_MWEB
     ): InnerTubeResponse
+
+    @POST("youtubei/v1/next")
+    suspend fun next(
+        @Body request: NextRequest,
+        @Header("User-Agent") userAgent: String = InnerTubeClient.USER_AGENT_MWEB
+    ): InnerTubeResponse
 }
