@@ -6,9 +6,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyHorizontalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -17,6 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,14 +29,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.android.pulse.audio.AudioPlayerManager
+import com.android.pulse.data.local.entity.HomeCacheEntity
 import com.android.pulse.data.model.Track
 import com.android.pulse.data.remote.innertube.InnerTubeRepository
 import com.android.pulse.data.remote.innertube.model.Category
 import com.android.pulse.data.remote.innertube.model.HomeData
 import com.android.pulse.ui.components.GlassHeader
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.launch
 import androidx.media3.common.util.UnstableApi
 
+@OptIn(ExperimentalMaterial3Api::class)
 @UnstableApi
 @Composable
 fun HomeView(
@@ -47,25 +50,76 @@ fun HomeView(
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
+    val gson = remember { Gson() }
+    
     var homeData by remember { mutableStateOf(HomeData()) }
     var isLoading by remember { mutableStateOf(false) }
+    var isRefreshing by remember { mutableStateOf(false) }
     var selectedCategory by remember { mutableStateOf<Category?>(null) }
     
-    // We only want to auto-refresh home data if it's empty. 
-    // Constantly refreshing on currentTrack change was causing the "Disappearing Content" bug.
-    fun refreshHome(category: Category? = null) {
+    val currentTrack by audioPlayerManager.currentTrack.collectAsState()
+    val history by audioPlayerManager.database.historyDao().getRecentHistory().collectAsState(initial = emptyList())
+    
+    val pullToRefreshState = rememberPullToRefreshState()
+    var lastRelatedTrackId by remember { mutableStateOf<String?>(null) }
+
+    fun refreshHome(category: Category? = null, relatedId: String? = null, forceRefresh: Boolean = false) {
         scope.launch {
-            isLoading = true
-            // Load fresh home discovery data
-            val data = InnerTubeRepository.getHomeData(category?.params, null)
-            homeData = data
+            if (forceRefresh) isRefreshing = true
+            else isLoading = true
+            
+            // Priority: relatedId (playback), then manual category, then history
+            val targetId = relatedId ?: if (category == null) history.firstOrNull()?.id else null
+            
+            android.util.Log.d("PULSE_TAG", "Refreshing: cat=${category?.title}, related=$targetId")
+            val data = InnerTubeRepository.getHomeData(category?.params, targetId)
+            
+            if (data.quickPicks.isNotEmpty() || data.speedDial.isNotEmpty()) {
+                homeData = data
+                
+                // CRITICAL: Only cache if it's a general discovery/category refresh, NOT a playback suggestion
+                if (relatedId == null) {
+                    audioPlayerManager.database.homeCacheDao().insertHomeCache(
+                        HomeCacheEntity(
+                            quickPicksJson = gson.toJson(data.quickPicks),
+                            speedDialJson = gson.toJson(data.speedDial),
+                            categoriesJson = gson.toJson(data.categories)
+                        )
+                    )
+                }
+            }
+            
             isLoading = false
+            isRefreshing = false
         }
     }
 
+    // 1. Initial Load from Cache (Persistence)
     LaunchedEffect(Unit) {
-        if (homeData.quickPicks.isEmpty() && !isLoading) {
+        val cache = audioPlayerManager.database.homeCacheDao().getHomeCache()
+        if (cache != null) {
+            val qpType = object : TypeToken<List<Track>>() {}.type
+            val sdType = object : TypeToken<List<Track>>() {}.type
+            val catType = object : TypeToken<List<Category>>() {}.type
+            
+            homeData = HomeData(
+                quickPicks = gson.fromJson(cache.quickPicksJson, qpType),
+                speedDial = gson.fromJson(cache.speedDialJson, sdType),
+                categories = gson.fromJson(cache.categoriesJson, catType)
+            )
+        }
+        
+        if (homeData.quickPicks.isEmpty()) {
             refreshHome()
+        }
+    }
+
+    // 2. Dynamic Update: Trigger suggestions on song play
+    LaunchedEffect(currentTrack?.id) {
+        val newId = currentTrack?.id
+        if (newId != null && newId != lastRelatedTrackId) {
+            lastRelatedTrackId = newId
+            refreshHome(category = selectedCategory, relatedId = newId)
         }
     }
 
@@ -74,73 +128,88 @@ fun HomeView(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            state = pullToRefreshState,
+            onRefresh = { refreshHome(selectedCategory, forceRefresh = true) },
+            modifier = Modifier.fillMaxSize()
         ) {
-            item {
-                GlassHeader(
-                    onSearchActivate = onSearchClick,
-                    onHistoryClick = onHistoryClick
-                )
-            }
-
-            item {
-                val moreCategories = listOf(
-                    Category("Romance", "FEmusic_home", "ggMPOg16X2V4Y2x1c2l2ZV9y"),
-                    Category("Sad", "FEmusic_home", "ggMPOg1hX2V4Y2x1c2l2ZV9y"),
-                    Category("Workout", "FEmusic_home", "ggMPOg1xX2V4Y2x1c2l2ZV9y"),
-                    Category("Focus", "FEmusic_home", "ggMPOg10X2V4Y2x1c2l2ZV9y")
-                )
-                val allCategories = (homeData.categories + moreCategories).distinctBy { it.title }
-
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(allCategories) { category ->
-                        FilterChip(
-                            selected = selectedCategory == category,
-                            onClick = {
-                                if (selectedCategory == category) {
-                                    selectedCategory = null
-                                    refreshHome()
-                                } else {
-                                    selectedCategory = category
-                                    refreshHome(category)
-                                }
-                            },
-                            label = { 
-                                Text(
-                                    category.title, 
-                                    color = if (selectedCategory == category) Color.White else MaterialTheme.colorScheme.onSurface
-                                ) 
-                            },
-                            colors = FilterChipDefaults.filterChipColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                selectedContainerColor = MaterialTheme.colorScheme.primary
-                            ),
-                            border = null,
-                            shape = RoundedCornerShape(20.dp)
-                        )
-                    }
-                }
-            }
-
-            if (isLoading && homeData.quickPicks.isEmpty()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 120.dp)
+            ) {
                 item {
-                    Box(modifier = Modifier.fillMaxWidth().height(300.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
+                    GlassHeader(
+                        onSearchActivate = onSearchClick,
+                        onHistoryClick = onHistoryClick
+                    )
+                }
+
+                item {
+                    val moreCategories = listOf(
+                        Category("Romance", "FEmusic_home", "ggMPOg16X2V4Y2x1c2l2ZV9y"),
+                        Category("Sad", "FEmusic_home", "ggMPOg1hX2V4Y2x1c2l2ZV9y"),
+                        Category("Workout", "FEmusic_home", "ggMPOg1xX2V4Y2x1c2l2ZV9y"),
+                        Category("Focus", "FEmusic_home", "ggMPOg10X2V4Y2x1c2l2ZV9y")
+                    )
+                    val allCategories = (homeData.categories + moreCategories).distinctBy { it.title }
+
+                    if (allCategories.isNotEmpty()) {
+                        LazyRow(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(allCategories) { category ->
+                                FilterChip(
+                                    selected = selectedCategory == category,
+                                    onClick = {
+                                        if (selectedCategory == category) {
+                                            selectedCategory = null
+                                            refreshHome(forceRefresh = true)
+                                        } else {
+                                            selectedCategory = category
+                                            refreshHome(category, forceRefresh = true)
+                                        }
+                                    },
+                                    label = { 
+                                        Text(
+                                            category.title, 
+                                            color = if (selectedCategory == category) Color.White else MaterialTheme.colorScheme.onSurface
+                                        ) 
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                        selectedContainerColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    border = null,
+                                    shape = RoundedCornerShape(20.dp)
+                                )
+                            }
+                        }
                     }
                 }
-            } else {
-                if (homeData.speedDial.isNotEmpty()) {
-                    item { SpeedDialSection(homeData.speedDial, audioPlayerManager) }
-                }
-                
-                if (homeData.quickPicks.isNotEmpty()) {
-                    item { QuickPicksSection(homeData.quickPicks, audioPlayerManager) }
+
+                if (isLoading && homeData.quickPicks.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillMaxWidth().height(300.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                } else {
+                    if (homeData.speedDial.isNotEmpty()) {
+                        item { SpeedDialSection(homeData.speedDial, audioPlayerManager) }
+                    }
+                    
+                    if (homeData.quickPicks.isNotEmpty()) {
+                        item { 
+                            QuickPicksSection(
+                                title = if (currentTrack != null) "Up next" else "Quick picks",
+                                tracks = homeData.quickPicks, 
+                                audioPlayerManager
+                            ) 
+                        }
+                    }
                 }
             }
         }
@@ -255,7 +324,7 @@ fun SpeedDialItem(track: Track, modifier: Modifier = Modifier, onClick: () -> Un
 
 @UnstableApi
 @Composable
-fun QuickPicksSection(tracks: List<Track>, playerManager: AudioPlayerManager) {
+fun QuickPicksSection(title: String, tracks: List<Track>, playerManager: AudioPlayerManager) {
     val pagedTracks = tracks.chunked(4)
     val pagerState = rememberPagerState(pageCount = { pagedTracks.size })
 
@@ -265,8 +334,7 @@ fun QuickPicksSection(tracks: List<Track>, playerManager: AudioPlayerManager) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Quick picks", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            // Fix: Pass the current page of tracks for "Play all" or the full list
+            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             TextButton(onClick = { playerManager.playTrack(tracks[0], tracks) }) {
                 Text("Play all")
             }
@@ -285,7 +353,6 @@ fun QuickPicksSection(tracks: List<Track>, playerManager: AudioPlayerManager) {
             ) {
                 pageTracks.forEach { track ->
                     QuickPickItem(track) {
-                        // Fix: Pass the current full list of tracks to ensure the queue matches the UI
                         playerManager.playTrack(track, tracks)
                     }
                 }

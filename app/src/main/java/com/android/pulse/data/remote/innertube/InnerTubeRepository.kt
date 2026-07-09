@@ -75,19 +75,23 @@ object InnerTubeRepository {
     }
 
     suspend fun getHomeData(categoryParams: String? = null, relatedToVideoId: String? = null): HomeData {
-        Log.e(TAG, "MUSIC-FILTER: getHomeData(related=$relatedToVideoId)")
+        Log.e(TAG, "MUSIC-FILTER: getHomeData(related=$relatedToVideoId, catParams=$categoryParams)")
         return try {
             val allTracks = mutableListOf<Track>()
             val categories = mutableListOf<Category>()
             
             val response = if (relatedToVideoId != null) {
+                Log.d(TAG, "MUSIC-FILTER: Fetching NEXT for $relatedToVideoId")
                 InnerTubeClient.apiService.next(NextRequest(context = InnerTubeClient.createWebContext(), videoId = relatedToVideoId), InnerTubeClient.USER_AGENT_WEB)
             } else {
+                Log.d(TAG, "MUSIC-FILTER: Fetching BROWSE for cat=$categoryParams")
                 InnerTubeClient.apiService.browse(BrowseRequest(context = InnerTubeClient.createWebContext(), browseId = "FEmusic_home", params = categoryParams), InnerTubeClient.USER_AGENT_WEB)
             }
 
             parseGreedy(response, allTracks)
             findCategories(convertToStd(response.contents), categories)
+            
+            Log.d(TAG, "MUSIC-FILTER: Parsed ${allTracks.size} total music tracks")
             
             if (categories.isEmpty()) {
                 categories.addAll(listOf(
