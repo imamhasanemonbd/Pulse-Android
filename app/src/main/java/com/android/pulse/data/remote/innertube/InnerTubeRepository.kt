@@ -6,7 +6,7 @@ import com.android.pulse.data.remote.innertube.model.*
 import com.google.gson.Gson
 
 /**
- * Singleton repository with strict Music-Only filtering logic.
+ * Singleton repository with strict Music-Only filtering logic and robust discovery.
  */
 object InnerTubeRepository {
     private const val TAG = "PULSE_TAG"
@@ -70,7 +70,12 @@ object InnerTubeRepository {
     }
 
     suspend fun getTrending(): List<Track> {
-        return searchMusic("Trending Music")
+        // Fetch trending from multiple potential terms to ensure enough data
+        val results = mutableListOf<Track>()
+        results.addAll(searchMusic("Trending Music"))
+        if (results.size < 20) results.addAll(searchMusic("Top Hits 2025"))
+        if (results.size < 20) results.addAll(searchMusic("New Music"))
+        return results.distinctBy { it.id }
     }
 
     suspend fun getHomeData(categoryParams: String? = null, relatedToVideoId: String? = null): HomeData {
@@ -79,6 +84,7 @@ object InnerTubeRepository {
             val allTracks = mutableListOf<Track>()
             val categories = mutableListOf<Category>()
             
+            // Step 1: Fetch primary data
             val response = if (relatedToVideoId != null) {
                 Log.d(TAG, "MUSIC-FILTER: Fetching NEXT for $relatedToVideoId")
                 InnerTubeClient.apiService.next(NextRequest(context = InnerTubeClient.createWebContext(), videoId = relatedToVideoId), InnerTubeClient.USER_AGENT_WEB)
@@ -90,41 +96,47 @@ object InnerTubeRepository {
             parseGreedy(response, allTracks)
             findCategories(convertToStd(response.contents), categories)
             
-            Log.d(TAG, "MUSIC-FILTER: Parsed ${allTracks.size} total music tracks")
+            // Step 2: Aggressive Fallback/Expansion
+            // If it's a category but we got very few tracks, use search to find more in that category
+            if (categoryParams != null && allTracks.size < 15) {
+                // Try to find category name from categories list to use as search query
+                val catName = categories.find { it.params == categoryParams }?.title 
+                            ?: categoryParams.substringAfter("ggMPOg").take(5) // fallback guess
+                Log.d(TAG, "MUSIC-FILTER: Low category results, supplementing with search for '$catName'")
+                allTracks.addAll(searchMusic("$catName Music"))
+            }
+
+            // Step 3: Global discovery fallback if still low
+            if (allTracks.size < 10) {
+                Log.w(TAG, "MUSIC-FILTER: Results still low (${allTracks.size}), merging with trending")
+                allTracks.addAll(getTrending())
+            }
             
-            // FALLBACK 1: If standard categories are missing, add defaults
+            // Step 4: Ensure categories aren't lost
             if (categories.isEmpty()) {
                 categories.addAll(listOf(
                     Category("Energize", "FEmusic_home", "ggMPOg1uX2V4Y2x1c2l2ZV9y"),
                     Category("Relax", "FEmusic_home", "ggMPOg1vX2V4Y2x1c2l2ZV9y"),
                     Category("Feel good", "FEmusic_home", "ggMPOg1wX2V4Y2x1c2l2ZV9y"),
-                    Category("Party", "FEmusic_home", "ggMPOg1yX2V4Y2x1c2l2ZV9y")
+                    Category("Party", "FEmusic_home", "ggMPOg1yX2V4Y2x1c2l2ZV9y"),
+                    Category("Romance", "FEmusic_home", "ggMPOg16X2V4Y2x1c2l2ZV9y"),
+                    Category("Workout", "FEmusic_home", "ggMPOg1xX2V4Y2x1c2l2ZV9y")
                 ))
             }
             
-            // FALLBACK 2: If we requested Related but got too few results, try broad Discovery instead
-            if (relatedToVideoId != null && allTracks.size < 5) {
-                Log.w(TAG, "MUSIC-FILTER: Low related results (${allTracks.size}), merging with discovery")
-                val browseResp = InnerTubeClient.apiService.browse(BrowseRequest(context = InnerTubeClient.createWebContext(), browseId = "FEmusic_home"), InnerTubeClient.USER_AGENT_WEB)
-                parseGreedy(browseResp, allTracks)
-            }
-
-            // FALLBACK 3: Ultimate trending fallback
-            if (allTracks.isEmpty()) {
-                Log.e(TAG, "MUSIC-FILTER: Home yielded 0 tracks, using trending fallback")
-                allTracks.addAll(getTrending())
-            }
-            
             val distinct = allTracks.filter { it.id != relatedToVideoId }.distinctBy { it.id }
+            Log.d(TAG, "MUSIC-FILTER: Total distinct tracks for Home: ${distinct.size}")
             
-            // Smart Distribution
+            // Intelligent slicing for Home UI sections
+            // We want at least ~30 tracks to populate all 3 sections nicely
             val speedDial = distinct.take(12)
-            val quickPicks = distinct.drop(12).take(30).ifEmpty { distinct.shuffled().take(20) }
+            val quickPicks = distinct.drop(12).ifEmpty { distinct.shuffled() }
             
             HomeData(quickPicks, speedDial, categories.distinctBy { it.title })
         } catch (e: Exception) {
             Log.e(TAG, "Home fatal", e)
-            HomeData(getTrending(), getTrending().shuffled(), emptyList())
+            val trending = getTrending()
+            HomeData(trending, trending.shuffled(), emptyList())
         }
     }
 
@@ -155,7 +167,6 @@ object InnerTubeRepository {
                         )
                         if (out.none { it.id == vid }) {
                             out.add(track)
-                            Log.d(TAG, "MUSIC VALIDATED: ${track.title} ($vid)")
                         }
                     }
                 }
@@ -218,16 +229,36 @@ object InnerTubeRepository {
     }
 
     private fun extractArtist(map: Map<*, *>): String? {
+        // Path 1: Detailed Byline (Official Music Schema)
+        val byline = parseRuns(map["longBylineText"]) ?: parseRuns(map["shortBylineText"]) ?: 
+                     parseRuns(map["subtitle"]) ?: parseRuns(map["bylineText"])
+        
+        if (byline != null) {
+            // Clean up byline (remove views, dots, etc)
+            val cleaned = byline.substringBefore(" • ").substringBefore(" views").trim()
+            if (cleaned.isNotEmpty()) return cleaned
+        }
+
+        // Path 2: Flex Columns (Common in search/home lists)
         (map["flexColumns"] as? List<*>)?.let { flex ->
             if (flex.size > 1) {
                 for (i in 1 until flex.size) {
-                    val r = (flex[i] as? Map<*, *>)?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
-                    val t = parseRuns(r?.get("text"))
-                    if (t != null && !t.contains("views", true) && !t.contains("plays", true) && !t.any { it.isDigit() }) return t
+                    val col = (flex[i] as? Map<*, *>)?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
+                    val text = parseRuns(col?.get("text"))
+                    if (text != null) {
+                        // Filter out non-artist noise like "Song", "Video", "1.2M views"
+                        val lower = text.lowercase()
+                        if (lower.contains("views") || lower.contains("plays") || lower == "song" || lower == "video") continue
+                        return text.substringBefore(" • ").trim()
+                    }
                 }
             }
         }
-        return parseRuns(map["longBylineText"]) ?: parseRuns(map["shortBylineText"]) ?: parseRuns(map["subtitle"]) ?: parseRuns(map["bylineText"])
+
+        // Path 3: Direct Headline/Subtitle strings
+        (map["subtitle"] as? String)?.let { return it.substringBefore(" • ").trim() }
+        
+        return null
     }
 
     private fun extractThumbnail(map: Map<*, *>): String? {

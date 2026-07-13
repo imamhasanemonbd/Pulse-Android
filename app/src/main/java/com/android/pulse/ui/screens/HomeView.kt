@@ -72,20 +72,20 @@ fun HomeView(
             android.util.Log.d("PULSE_TAG", "HomeView: performRefresh(cat=${category?.title}, related=$targetId)")
             
             val data = InnerTubeRepository.getHomeData(category?.params, targetId)
-            android.util.Log.d("PULSE_TAG", "HomeView: Received data - QuickPicks=${data.quickPicks.size}, SpeedDial=${data.speedDial.size}")
             
-            if (data.quickPicks.isNotEmpty() || data.speedDial.isNotEmpty()) {
+            if (data.quickPicks.isNotEmpty() || data.speedDial.isNotEmpty() || data.categories.isNotEmpty()) {
                 homeData = data
                 
-                audioPlayerManager.database.homeCacheDao().insertHomeCache(
-                    HomeCacheEntity(
-                        quickPicksJson = gson.toJson(data.quickPicks),
-                        speedDialJson = gson.toJson(data.speedDial),
-                        categoriesJson = gson.toJson(data.categories)
+                // Cache discovery structure (mostly for categories and startup stability)
+                if (category == null) {
+                    audioPlayerManager.database.homeCacheDao().insertHomeCache(
+                        HomeCacheEntity(
+                            quickPicksJson = gson.toJson(data.quickPicks),
+                            speedDialJson = gson.toJson(data.speedDial),
+                            categoriesJson = gson.toJson(data.categories)
+                        )
                     )
-                )
-            } else {
-                android.util.Log.w("PULSE_TAG", "HomeView: REPOSITORY RETURNED EMPTY DATA")
+                }
             }
             
             isLoading = false
@@ -106,7 +106,6 @@ fun HomeView(
                     speedDial = gson.fromJson(cache.speedDialJson, sdType),
                     categories = gson.fromJson(cache.categoriesJson, catType)
                 )
-                android.util.Log.d("PULSE_TAG", "HomeView: Loaded from Cache - QP=${homeData.quickPicks.size}, SD=${homeData.speedDial.size}")
             }
             
             if (homeData.quickPicks.isEmpty() && homeData.speedDial.isEmpty()) {
@@ -143,7 +142,8 @@ fun HomeView(
                         Category("Romance", "FEmusic_home", "ggMPOg16X2V4Y2x1c2l2ZV9y"),
                         Category("Sad", "FEmusic_home", "ggMPOg1hX2V4Y2x1c2l2ZV9y"),
                         Category("Workout", "FEmusic_home", "ggMPOg1xX2V4Y2x1c2l2ZV9y"),
-                        Category("Focus", "FEmusic_home", "ggMPOg10X2V4Y2x1c2l2ZV9y")
+                        Category("Focus", "FEmusic_home", "ggMPOg10X2V4Y2x1c2l2ZV9y"),
+                        Category("Party", "FEmusic_home", "ggMPOg1yX2V4Y2x1c2l2ZV9y")
                     )
                     val allCategories = (homeData.categories + moreCategories).distinctBy { it.title }
 
@@ -183,24 +183,24 @@ fun HomeView(
                     }
                 }
 
-                if (isLoading && recentlyPlayed.isEmpty() && homeData.quickPicks.isEmpty()) {
+                if (isLoading && homeData.quickPicks.isEmpty() && homeData.speedDial.isEmpty()) {
                     item {
-                        Box(modifier = Modifier.fillMaxWidth().height(300.dp), contentAlignment = Alignment.Center) {
+                        Box(modifier = Modifier.fillMaxWidth().height(400.dp), contentAlignment = Alignment.Center) {
                             CircularProgressIndicator()
                         }
                     }
                 } else {
-                    // 1. RECENTLY PLAYED (3x3 Paged Grid)
+                    // 1. RECENTLY PLAYED (Stable History)
                     if (recentlyPlayed.isNotEmpty()) {
                         item { RecentlyPlayedSection(recentlyPlayed, audioPlayerManager) }
                     }
 
-                    // ELASTIC DISTRIBUTION: Spread all available tracks across new sections
-                    val allDiscovery = (homeData.speedDial + homeData.quickPicks).distinctBy { it.id }.shuffled()
+                    // DISCOVERY AGGREGATION: Combine all results for distribution
+                    val discoveryTracks = (homeData.speedDial + homeData.quickPicks).distinctBy { it.id }.shuffled()
                     
-                    if (allDiscovery.isNotEmpty()) {
-                        // 2. TOP HITS (Horizontal Card Row)
-                        val topHits = allDiscovery.take(8)
+                    if (discoveryTracks.isNotEmpty()) {
+                        // Section 2: Top Hits (8 Tracks)
+                        val topHits = discoveryTracks.take(8)
                         item {
                             TopHitsSection(
                                 title = if (selectedCategory != null) "${selectedCategory!!.title} Hits" else "Trending Hits",
@@ -209,8 +209,8 @@ fun HomeView(
                             )
                         }
 
-                        // 3. VIBE MIX (Circle Avatar Row)
-                        val vibeMix = allDiscovery.drop(8).take(10)
+                        // Section 3: Vibe Mix (10 Tracks)
+                        val vibeMix = discoveryTracks.drop(8).take(10)
                         if (vibeMix.isNotEmpty()) {
                             item {
                                 VibeMixSection(
@@ -221,8 +221,8 @@ fun HomeView(
                             }
                         }
 
-                        // 4. FEATURED (2x2 Grid)
-                        val featured = allDiscovery.drop(18).take(12)
+                        // Section 4: Featured Grid (Up to 12 Tracks)
+                        val featured = discoveryTracks.drop(18).take(12)
                         if (featured.isNotEmpty()) {
                             item {
                                 FeaturedGridSection(
