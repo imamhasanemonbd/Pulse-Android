@@ -44,6 +44,11 @@ data class NextRequest(
     val browseId: String? = null
 )
 
+data class LyricsRequest(
+    val context: InnerTubeContext,
+    val browseId: String
+)
+
 data class Category(
     val title: String,
     val browseId: String,

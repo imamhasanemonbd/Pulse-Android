@@ -2,9 +2,7 @@ package com.android.pulse.ui.components
 
 import android.content.Intent
 import androidx.compose.animation.*
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
@@ -15,11 +13,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.*
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+import androidx.compose.material.icons.automirrored.filled.VolumeDown
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.AllInclusive
-import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,10 +39,11 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.android.pulse.audio.AudioPlayerManager
 import com.android.pulse.audio.DownloadManager
-import com.android.pulse.data.local.entity.PlaylistEntity
-import androidx.media3.common.Player
-import androidx.media3.common.util.UnstableApi
+import com.android.pulse.data.model.Track
 import kotlinx.coroutines.launch
+import androidx.media3.common.util.UnstableApi
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.basicMarquee
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,7 +52,8 @@ import kotlin.math.roundToInt
 fun PlayerSheet(
     playerManager: AudioPlayerManager,
     isVisible: Boolean,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onSearchArtist: (String) -> Unit
 ) {
     val context = LocalContext.current
     val config = LocalConfiguration.current
@@ -75,7 +76,6 @@ fun PlayerSheet(
     var showQueue by remember { mutableStateOf(false) }
     var showAddToPlaylist by remember { mutableStateOf(false) }
 
-    // Smooth Slider Logic
     var sliderPosition by remember { mutableFloatStateOf(0f) }
     var isDraggingSlider by remember { mutableStateOf(false) }
 
@@ -128,7 +128,6 @@ fun PlayerSheet(
         color = MaterialTheme.colorScheme.background
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Dynamic Blurred Background
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -146,10 +145,8 @@ fun PlayerSheet(
                 modifier = Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Notch Safety Spacer
                 Spacer(modifier = Modifier.statusBarsPadding())
                 
-                // Drag Handle
                 Box(
                     modifier = Modifier
                         .padding(vertical = 12.dp)
@@ -158,7 +155,6 @@ fun PlayerSheet(
                         .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
                 )
 
-                // Header Morphing
                 AnimatedVisibility(
                     visible = showLyrics || showQueue,
                     enter = fadeIn() + expandVertically(),
@@ -208,7 +204,6 @@ fun PlayerSheet(
                     }
                 }
 
-                // Main Area (Artwork, Lyrics, or Queue)
                 Box(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentAlignment = Alignment.Center
@@ -226,7 +221,6 @@ fun PlayerSheet(
                             QueueView(playerManager)
                         }
                     } else {
-                        // Artwork
                         val scale by animateFloatAsState(
                             targetValue = if (isPlaying) pulsation else 0.96f,
                             animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessLow),
@@ -247,14 +241,12 @@ fun PlayerSheet(
                     }
                 }
 
-                // Metadata, Slider, Controls (Bottom Section)
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 24.dp, vertical = 24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Metadata (Only show if artwork is showing)
                     if (!showLyrics && !showQueue) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -274,7 +266,8 @@ fun PlayerSheet(
                                     text = track!!.artist,
                                     style = MaterialTheme.typography.titleMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    modifier = Modifier.clickable { onSearchArtist(track!!.artist) }
                                 )
                             }
                             
@@ -300,7 +293,6 @@ fun PlayerSheet(
                         Spacer(modifier = Modifier.height(24.dp))
                     }
 
-                    // Progress Slider
                     Box(contentAlignment = Alignment.Center) {
                         Slider(
                             value = sliderPosition,
@@ -342,7 +334,6 @@ fun PlayerSheet(
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // Playback Controls
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly,
@@ -365,7 +356,6 @@ fun PlayerSheet(
 
                     Spacer(modifier = Modifier.height(48.dp))
 
-                    // Volume Slider
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
@@ -386,7 +376,6 @@ fun PlayerSheet(
 
                     Spacer(modifier = Modifier.height(32.dp))
 
-                    // Bottom Utilities
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly,
@@ -426,7 +415,6 @@ fun PlayerSheet(
         }
     }
 
-    // More Options Sheet
     if (showMoreOptions) {
         ModalBottomSheet(
             onDismissRequest = { showMoreOptions = false },
@@ -462,7 +450,16 @@ fun PlayerSheet(
                     }
                 )
 
-                // BUG FIX: Check both database flag AND local progress to determine UI state
+                ListItem(
+                    headlineContent = { Text("Search Artist") },
+                    leadingContent = { Icon(Icons.Default.PersonSearch, null) },
+                    modifier = Modifier.clickable { 
+                        onSearchArtist(track!!.artist)
+                        showMoreOptions = false
+                        onDismiss()
+                    }
+                )
+
                 val isDownloadedByDb by playerManager.database.offlineSongDao().isDownloaded(track!!.id).collectAsState(initial = false)
                 val isActuallyFinished = isDownloadedByDb && currentProgress == null
 
@@ -557,81 +554,59 @@ fun PlayerSheet(
     }
 }
 
-@UnstableApi
+@OptIn(UnstableApi::class)
 @Composable
 fun QueueView(playerManager: AudioPlayerManager) {
-    val shuffleMode by playerManager.shuffleMode.collectAsState()
-    val repeatMode by playerManager.repeatMode.collectAsState()
+    val queue = playerManager.currentQueue
+    val currentTrack by playerManager.currentTrack.collectAsState()
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // Queue Controls (Apple Music Style)
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            val controlModifier = Modifier.weight(1f).height(48.dp)
-            val activeColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
-            val inactiveColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
-
-            Surface(
-                onClick = { playerManager.toggleShuffle() },
-                modifier = controlModifier,
-                shape = RoundedCornerShape(12.dp),
-                color = if (shuffleMode) activeColor else inactiveColor
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Default.Shuffle, null, modifier = Modifier.size(20.dp))
-                }
-            }
-
-            Surface(
-                onClick = { playerManager.cycleRepeatMode() },
-                modifier = controlModifier,
-                shape = RoundedCornerShape(12.dp),
-                color = if (repeatMode != Player.REPEAT_MODE_OFF) activeColor else inactiveColor
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
-                        null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-
-            Surface(
-                onClick = { /* Autoplay Toggle */ },
-                modifier = controlModifier,
-                shape = RoundedCornerShape(12.dp),
-                color = inactiveColor
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Outlined.AllInclusive, null, modifier = Modifier.size(20.dp))
-                }
-            }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(bottom = 32.dp)
+    ) {
+        item {
+            Text(
+                "Up Next",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(vertical = 16.dp)
+            )
         }
-
-        Text(
-            "Playing Next", 
-            style = MaterialTheme.typography.titleMedium, 
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(bottom = 12.dp)
-        )
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            items(playerManager.currentQueue) { track ->
-                TrackItem(track) {
-                    playerManager.playTrack(track, playerManager.currentQueue)
+        items(queue) { track ->
+            val isPlaying = track.id == currentTrack?.id
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (isPlaying) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else Color.Transparent)
+                    .clickable { playerManager.playTrack(track, queue) }
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AsyncImage(
+                    model = track.thumbnail,
+                    contentDescription = null,
+                    modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
+                    contentScale = ContentScale.Crop
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        track.title, 
+                        style = MaterialTheme.typography.bodyLarge, 
+                        fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(track.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
     }
 }
 
-private fun formatTime(ms: Long): String {
-    val totalSeconds = (ms / 1000).coerceAtLeast(0)
+fun formatTime(ms: Long): String {
+    val totalSeconds = ms / 1000
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "%d:%02d".format(minutes, seconds)

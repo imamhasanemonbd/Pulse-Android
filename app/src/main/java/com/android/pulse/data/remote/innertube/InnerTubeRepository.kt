@@ -61,6 +61,28 @@ object InnerTubeRepository {
             val tracks = mutableListOf<Track>()
             parseGreedy(response, tracks)
             
+            // --- METADATA SELF-HEALING (PORT FROM WEB) ---
+            // If any track (especially the top card) has "Unknown Artist", 
+            // try to find the correct artist from other results with the same title.
+            for (i in tracks.indices) {
+                if (tracks[i].artist == "Unknown Artist") {
+                    val cleanTitle = tracks[i].title.lowercase()
+                        .substringBefore(" (")
+                        .substringBefore(" |")
+                        .trim()
+                    
+                    val correctArtist = tracks.find { 
+                        val otherTitle = it.title.lowercase()
+                        otherTitle.contains(cleanTitle) && it.artist != "Unknown Artist" 
+                    }?.artist
+                    
+                    if (correctArtist != null) {
+                        tracks[i] = tracks[i].copy(artist = correctArtist)
+                        Log.d(TAG, "HEALED: Set artist '$correctArtist' for '${tracks[i].title}'")
+                    }
+                }
+            }
+            
             Log.e(TAG, "MUSIC-FILTER: found ${tracks.size} tracks")
             tracks.distinctBy { it.id }
         } catch (e: Exception) {
@@ -70,7 +92,6 @@ object InnerTubeRepository {
     }
 
     suspend fun getTrending(): List<Track> {
-        // Fetch trending from multiple potential terms to ensure enough data
         val results = mutableListOf<Track>()
         results.addAll(searchMusic("Trending Music"))
         if (results.size < 20) results.addAll(searchMusic("Top Hits 2025"))
@@ -84,7 +105,6 @@ object InnerTubeRepository {
             val allTracks = mutableListOf<Track>()
             val categories = mutableListOf<Category>()
             
-            // Step 1: Fetch primary data
             val response = if (relatedToVideoId != null) {
                 Log.d(TAG, "MUSIC-FILTER: Fetching NEXT for $relatedToVideoId")
                 InnerTubeClient.apiService.next(NextRequest(context = InnerTubeClient.createWebContext(), videoId = relatedToVideoId), InnerTubeClient.USER_AGENT_WEB)
@@ -96,23 +116,18 @@ object InnerTubeRepository {
             parseGreedy(response, allTracks)
             findCategories(convertToStd(response.contents), categories)
             
-            // Step 2: Aggressive Fallback/Expansion
-            // If it's a category but we got very few tracks, use search to find more in that category
             if (categoryParams != null && allTracks.size < 15) {
-                // Try to find category name from categories list to use as search query
                 val catName = categories.find { it.params == categoryParams }?.title 
-                            ?: categoryParams.substringAfter("ggMPOg").take(5) // fallback guess
+                            ?: categoryParams.substringAfter("ggMPOg").take(5)
                 Log.d(TAG, "MUSIC-FILTER: Low category results, supplementing with search for '$catName'")
                 allTracks.addAll(searchMusic("$catName Music"))
             }
 
-            // Step 3: Global discovery fallback if still low
             if (allTracks.size < 10) {
                 Log.w(TAG, "MUSIC-FILTER: Results still low (${allTracks.size}), merging with trending")
                 allTracks.addAll(getTrending())
             }
             
-            // Step 4: Ensure categories aren't lost
             if (categories.isEmpty()) {
                 categories.addAll(listOf(
                     Category("Energize", "FEmusic_home", "ggMPOg1uX2V4Y2x1c2l2ZV9y"),
@@ -125,10 +140,6 @@ object InnerTubeRepository {
             }
             
             val distinct = allTracks.filter { it.id != relatedToVideoId }.distinctBy { it.id }
-            Log.d(TAG, "MUSIC-FILTER: Total distinct tracks for Home: ${distinct.size}")
-            
-            // Intelligent slicing for Home UI sections
-            // We want at least ~30 tracks to populate all 3 sections nicely
             val speedDial = distinct.take(12)
             val quickPicks = distinct.drop(12).ifEmpty { distinct.shuffled() }
             
@@ -175,9 +186,12 @@ object InnerTubeRepository {
         }
     }
 
-    private fun isMusicMedia(map: Map<*, *>): Boolean {
-        val json = gson.toJson(map)
+    private fun isMusicMedia(node: Map<*, *>): Boolean {
+        if (node.containsKey("musicResponsiveListItemRenderer")) return true
+        if (node.containsKey("musicTwoRowItemRenderer")) return true
+        if (node.containsKey("musicCardShelfRenderer")) return true
         
+        val json = gson.toJson(node)
         val hasMusicType = json.contains("MUSIC_VIDEO_TYPE_ATV") || 
                            json.contains("MUSIC_VIDEO_TYPE_OMV") || 
                            json.contains("MUSIC_PAGE_TYPE_TRACK") ||
@@ -185,8 +199,8 @@ object InnerTubeRepository {
         
         if (hasMusicType) return true
 
-        val title = (extractTitle(map) ?: "").lowercase()
-        val artist = (extractArtist(map) ?: "").lowercase()
+        val title = (extractTitle(node) ?: "").lowercase()
+        val artist = (extractArtist(node) ?: "").lowercase()
         val blacklist = listOf("telefilm", "vlog", "blog", "full movie", "episode", "drama", "documentary", "news")
         
         if (blacklist.any { title.contains(it) || artist.contains(it) }) return false
@@ -199,8 +213,7 @@ object InnerTubeRepository {
             if (mins > 15 && !title.contains("mix") && !title.contains("phonk")) return false
         }
 
-        return map.containsKey("musicResponsiveListItemRenderer") || 
-               map.containsKey("musicTwoRowItemRenderer")
+        return false
     }
 
     private fun extractVideoId(map: Map<*, *>): String? {
@@ -229,35 +242,57 @@ object InnerTubeRepository {
     }
 
     private fun extractArtist(map: Map<*, *>): String? {
-        // Path 1: Detailed Byline (Official Music Schema)
-        val byline = parseRuns(map["longBylineText"]) ?: parseRuns(map["shortBylineText"]) ?: 
-                     parseRuns(map["subtitle"]) ?: parseRuns(map["bylineText"])
-        
-        if (byline != null) {
-            // Clean up byline (remove views, dots, etc)
-            val cleaned = byline.substringBefore(" • ").substringBefore(" views").trim()
-            if (cleaned.isNotEmpty()) return cleaned
-        }
+        val artistsList = mutableListOf<String>()
 
-        // Path 2: Flex Columns (Common in search/home lists)
-        (map["flexColumns"] as? List<*>)?.let { flex ->
-            if (flex.size > 1) {
-                for (i in 1 until flex.size) {
-                    val col = (flex[i] as? Map<*, *>)?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
-                    val text = parseRuns(col?.get("text"))
-                    if (text != null) {
-                        // Filter out non-artist noise like "Song", "Video", "1.2M views"
-                        val lower = text.lowercase()
-                        if (lower.contains("views") || lower.contains("plays") || lower == "song" || lower == "video") continue
-                        return text.substringBefore(" • ").trim()
+        fun addFromRuns(node: Any?) {
+            val runs = when (node) {
+                is Map<*, *> -> node["runs"] as? List<*>
+                is List<*> -> node
+                else -> null
+            }
+            runs?.forEach { run ->
+                if (run is Map<*, *>) {
+                    val text = run["text"]?.toString()
+                    val nav = (run["navigationEndpoint"] as? Map<*, *>) ?: (run["serviceEndpoint"] as? Map<*, *>)
+                    val browseId = (nav?.get("browseEndpoint") as? Map<*, *>)?.get("browseId")?.toString()
+                    
+                    if (text != null && browseId != null && (browseId.startsWith("UC") || browseId.contains("artist"))) {
+                        if (!artistsList.contains(text)) artistsList.add(text)
                     }
                 }
             }
         }
 
-        // Path 3: Direct Headline/Subtitle strings
-        (map["subtitle"] as? String)?.let { return it.substringBefore(" • ").trim() }
-        
+        // Path 1: Card Shelf Header (Best Match)
+        (map["header"] as? Map<*, *>)?.let { h ->
+            val cardHeader = h["musicCardShelfHeaderBasicRenderer"] as? Map<*, *>
+            addFromRuns(cardHeader?.get("title"))
+            addFromRuns(cardHeader?.get("subtitle"))
+        }
+
+        // Path 2: Flex Columns (Common in search/home lists)
+        (map["flexColumns"] as? List<*>)?.let { flex ->
+            flex.forEach { col ->
+                val r = (col as? Map<*, *>)?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
+                addFromRuns(r?.get("text"))
+            }
+        }
+
+        // Path 3: Direct byline strings
+        addFromRuns(map["longBylineText"])
+        addFromRuns(map["shortBylineText"])
+        addFromRuns(map["subtitle"])
+        addFromRuns(map["bylineText"])
+
+        if (artistsList.isNotEmpty()) return artistsList.joinToString(", ")
+
+        // Path 4: Direct subtitle fallback (cleaned)
+        val subtitle = (map["subtitle"] as? String) ?: parseRuns(map["subtitle"])
+        if (subtitle != null) {
+            val cleaned = subtitle.substringBefore(" • ").trim()
+            if (cleaned.isNotEmpty() && !cleaned.lowercase().contains("song")) return cleaned
+        }
+
         return null
     }
 
@@ -327,6 +362,54 @@ object InnerTubeRepository {
     }
 
     suspend fun getLyrics(trackId: String): String? {
-        return null
+        return try {
+            // 1. Fetch "Next" to get the lyrics browseId
+            val nextReq = NextRequest(context = InnerTubeClient.createWebContext(), videoId = trackId)
+            val nextResp = InnerTubeClient.apiService.next(nextReq, InnerTubeClient.USER_AGENT_WEB)
+            val root = convertToStd(nextResp.contents) as? Map<*, *>
+            
+            // Search for lyrics browseId in the response
+            var lyricsBrowseId: String? = null
+            
+            fun findLyricsId(node: Any?) {
+                if (lyricsBrowseId != null || node == null) return
+                if (node is List<*>) node.forEach { findLyricsId(it) }
+                else if (node is Map<*, *>) {
+                    val browseEndpoint = node["browseEndpoint"] as? Map<*, *>
+                    if (browseEndpoint != null && browseEndpoint["browseId"]?.toString()?.startsWith("FEmusic_lyrics") == true) {
+                        lyricsBrowseId = browseEndpoint["browseId"].toString()
+                        return
+                    }
+                    node.values.forEach { findLyricsId(it) }
+                }
+            }
+            findLyricsId(root)
+
+            if (lyricsBrowseId != null) {
+                val lyricsReq = LyricsRequest(context = InnerTubeClient.createWebContext(), browseId = lyricsBrowseId!!)
+                val lyricsResp = InnerTubeClient.apiService.getLyrics(lyricsReq, InnerTubeClient.USER_AGENT_WEB)
+                val contents = convertToStd(lyricsResp.contents) as? Map<*, *>
+                
+                // Extract lyrics text from description
+                var lyricsText: String? = null
+                fun extractText(node: Any?) {
+                    if (lyricsText != null || node == null) return
+                    if (node is List<*>) node.forEach { extractText(it) }
+                    else if (node is Map<*, *>) {
+                        if (node.containsKey("musicDescriptionShelfRenderer")) {
+                            val r = node["musicDescriptionShelfRenderer"] as? Map<*, *>
+                            lyricsText = parseRuns(r?.get("description"))
+                            return
+                        }
+                        node.values.forEach { extractText(it) }
+                    }
+                }
+                extractText(contents)
+                lyricsText
+            } else null
+        } catch (e: Exception) {
+            Log.e(TAG, "Lyrics fetch failed", e)
+            null
+        }
     }
 }

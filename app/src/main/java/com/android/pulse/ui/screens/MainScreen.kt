@@ -1,40 +1,36 @@
 package com.android.pulse.ui.screens
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.zIndex
-import coil.compose.AsyncImage
 import com.android.pulse.audio.AudioPlayerManager
-import com.android.pulse.ui.components.BottomNavBar
-import com.android.pulse.ui.components.NavItem
-import com.android.pulse.ui.components.PlayerSheet
-import com.android.pulse.data.local.entity.PlaylistEntity
+import com.android.pulse.ui.components.*
 import kotlinx.coroutines.launch
 import androidx.media3.common.util.UnstableApi
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.IntOffset
+import com.android.pulse.data.local.entity.PlaylistEntity
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.animation.core.SpringSpec
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import coil.compose.AsyncImage
 
 @UnstableApi
 @Composable
@@ -48,12 +44,11 @@ fun MainScreen(playerManager: AudioPlayerManager) {
     var showAboutScreen by remember { mutableStateOf(false) }
     var showHistoryScreen by remember { mutableStateOf(false) }
     var showSearchScreen by remember { mutableStateOf(false) }
+    var searchInitialQuery by remember { mutableStateOf<String?>(null) }
     
     // Library sub-screens
     var showLikedMusic by remember { mutableStateOf(false) }
     var showOfflineMusic by remember { mutableStateOf(false) }
-    var showCachedMusic by remember { mutableStateOf(false) }
-    var showLocalMusic by remember { mutableStateOf(false) }
     var showAllPlaylists by remember { mutableStateOf(false) }
     var selectedPlaylistForView by remember { mutableStateOf<PlaylistEntity?>(null) }
     
@@ -62,23 +57,17 @@ fun MainScreen(playerManager: AudioPlayerManager) {
 
     val isMiniPlayerVisible = currentTrack != null && !showPlayerSheet
 
-    // Helper to close all overlays when switching tabs
     fun closeAllOverlays() {
         showAboutScreen = false
         showHistoryScreen = false
         showSearchScreen = false
+        searchInitialQuery = null
         showLikedMusic = false
         showOfflineMusic = false
-        showCachedMusic = false
-        showLocalMusic = false
         showAllPlaylists = false
         selectedPlaylistForView = null
     }
 
-    // HIERARCHICAL BACK NAVIGATION:
-    // Liked -> Playlists -> Library -> Home -> Exit
-    // About -> Setting -> Home -> Exit
-    // Search -> Home -> Exit
     BackHandler(enabled = true) {
         if (showPlayerSheet) {
             showPlayerSheet = false
@@ -88,20 +77,18 @@ fun MainScreen(playerManager: AudioPlayerManager) {
             showHistoryScreen = false
         } else if (showSearchScreen) {
             showSearchScreen = false
+            searchInitialQuery = null
         } else if (selectedPlaylistForView != null) {
             selectedPlaylistForView = null
-            showAllPlaylists = true // Back from PlaylistSongs goes to AllPlaylists
+            showAllPlaylists = true
         } else if (showLikedMusic) {
-            showLikedMusic = false // Back from Liked goes to Library
+            showLikedMusic = false
             scope.launch { pagerState.animateScrollToPage(items.indexOf(NavItem.Library)) }
         } else if (showAllPlaylists) {
-            showAllPlaylists = false // Back from Playlists goes to Library
+            showAllPlaylists = false
             scope.launch { pagerState.animateScrollToPage(items.indexOf(NavItem.Library)) }
-        } else if (showOfflineMusic || showCachedMusic || showLocalMusic) {
-            // These screens go back to Library
+        } else if (showOfflineMusic) {
             showOfflineMusic = false
-            showCachedMusic = false
-            showLocalMusic = false
             scope.launch { pagerState.animateScrollToPage(items.indexOf(NavItem.Library)) }
         } else if (pagerState.currentPage != 0) {
             scope.launch { pagerState.animateScrollToPage(0) }
@@ -133,7 +120,6 @@ fun MainScreen(playerManager: AudioPlayerManager) {
                         onItemClick = { route ->
                             val index = items.indexOfFirst { it.route == route }
                             if (index != -1) {
-                                // BUG FIX: Reset all overlays when switching tabs via bottom nav
                                 closeAllOverlays()
                                 scope.launch {
                                     pagerState.animateScrollToPage(index)
@@ -149,8 +135,7 @@ fun MainScreen(playerManager: AudioPlayerManager) {
                 HorizontalPager(
                     state = pagerState,
                     modifier = Modifier.fillMaxSize(),
-                    beyondViewportPageCount = 0,
-                    userScrollEnabled = false,
+                    userScrollEnabled = false // Tabs handle navigation
                 ) { page ->
                     val viewModifier = Modifier.padding(innerPadding)
                     when (items[page]) {
@@ -167,86 +152,80 @@ fun MainScreen(playerManager: AudioPlayerManager) {
                             modifier = viewModifier
                         )
                         NavItem.Settings -> SettingsView(
-                            audioPlayerManager = playerManager, 
+                            audioPlayerManager = playerManager,
                             onAboutClick = { showAboutScreen = true },
                             modifier = viewModifier
                         )
-                        else -> {}
+                        else -> { /* Other NavItems not in bottom bar */ }
                     }
                 }
 
-                val overlayModifier = Modifier.fillMaxSize().padding(innerPadding)
-                val springSpec = spring<IntOffset>(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow)
-
-                // OVERLAYS: Standardized with back-stack support
-                Overlay(visible = showSearchScreen, springSpec = springSpec) {
-                    SearchView(playerManager = playerManager, onBack = { showSearchScreen = false }, modifier = overlayModifier)
-                }
-
-                Overlay(visible = showHistoryScreen, springSpec = springSpec) {
-                    HistoryView(playerManager = playerManager, onBack = { showHistoryScreen = false }, modifier = overlayModifier)
-                }
-
-                Overlay(visible = showAboutScreen, springSpec = springSpec) {
-                    AboutView(onBack = { showAboutScreen = false }, modifier = overlayModifier)
+                // NAVIGATION OVERLAYS
+                Overlay(visible = showAboutScreen) {
+                    PlaceholderView("About Pulse", { showAboutScreen = false })
                 }
                 
-                // Library Sub-screens
-                Overlay(visible = showAllPlaylists, springSpec = springSpec) {
-                    AllPlaylistsView(
-                        audioPlayerManager = playerManager,
-                        onBack = { showAllPlaylists = false },
-                        onPlaylistClick = { playlist -> 
-                            selectedPlaylistForView = playlist
-                            showAllPlaylists = false
+                Overlay(visible = showHistoryScreen) {
+                    PlaceholderView("Listen History", { showHistoryScreen = false })
+                }
+
+                Overlay(visible = showSearchScreen) {
+                    SearchView(
+                        playerManager = playerManager,
+                        onBack = { 
+                            showSearchScreen = false
+                            searchInitialQuery = null
                         },
-                        modifier = overlayModifier
+                        initialQuery = searchInitialQuery
                     )
                 }
 
-                Overlay(visible = showLikedMusic, springSpec = springSpec) {
-                    LikedSongsView(playerManager = playerManager, onBack = { 
-                        showLikedMusic = false
-                    }, modifier = overlayModifier)
+                Overlay(visible = showLikedMusic) {
+                    LikedSongsView(playerManager, onBack = { showLikedMusic = false })
                 }
 
-                Overlay(visible = selectedPlaylistForView != null, springSpec = springSpec) {
-                    if (selectedPlaylistForView != null) {
+                Overlay(visible = showOfflineMusic) {
+                    OfflineMusicView(playerManager, onBack = { showOfflineMusic = false })
+                }
+
+                Overlay(visible = showAllPlaylists) {
+                    AllPlaylistsView(
+                        audioPlayerManager = playerManager,
+                        onBack = { showAllPlaylists = false },
+                        onPlaylistClick = { 
+                            selectedPlaylistForView = it
+                            showAllPlaylists = false
+                        }
+                    )
+                }
+
+                Overlay(visible = selectedPlaylistForView != null) {
+                    selectedPlaylistForView?.let { playlist ->
                         PlaylistSongsView(
-                            playlist = selectedPlaylistForView!!,
+                            playlist = playlist,
                             playerManager = playerManager,
-                            onBack = { 
-                                showAllPlaylists = true // Per requested order
-                                selectedPlaylistForView = null 
-                            },
-                            modifier = overlayModifier
+                            onBack = { selectedPlaylistForView = null }
                         )
                     }
-                }
-                
-                // Placeholder Overlays for newly requested features
-                Overlay(visible = showOfflineMusic, springSpec = springSpec) {
-                    OfflineMusicView(playerManager = playerManager, onBack = { showOfflineMusic = false }, modifier = overlayModifier)
-                }
-                Overlay(visible = showCachedMusic, springSpec = springSpec) {
-                    PlaceholderView("Cached Music", onBack = { showCachedMusic = false }, modifier = overlayModifier)
-                }
-                Overlay(visible = showLocalMusic, springSpec = springSpec) {
-                    PlaceholderView("Local Music", onBack = { showLocalMusic = false }, modifier = overlayModifier)
                 }
             }
         }
 
-        // FULL SCREEN PLAYER SHEET
+        // PLAYER SHEET
         AnimatedVisibility(
             visible = showPlayerSheet,
-            enter = slideInVertically(initialOffsetY = { it }, animationSpec = spring(stiffness = Spring.StiffnessLow)) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }, animationSpec = spring(stiffness = Spring.StiffnessLow)) + fadeOut()
+            enter = slideInVertically(initialOffsetY = { it }),
+            exit = slideOutVertically(targetOffsetY = { it })
         ) {
             PlayerSheet(
                 playerManager = playerManager,
                 isVisible = showPlayerSheet,
-                onDismiss = { showPlayerSheet = false }
+                onDismiss = { showPlayerSheet = false },
+                onSearchArtist = { artist ->
+                    showPlayerSheet = false
+                    searchInitialQuery = artist
+                    showSearchScreen = true
+                }
             )
         }
     }
@@ -255,40 +234,33 @@ fun MainScreen(playerManager: AudioPlayerManager) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlaceholderView(title: String, onBack: () -> Unit, modifier: Modifier = Modifier) {
-    Box(modifier = modifier.background(MaterialTheme.colorScheme.background)) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text(title) },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, null)
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-                )
-            },
-            containerColor = Color.Transparent
-        ) { innerPadding ->
-            Box(modifier = Modifier.fillMaxSize().padding(innerPadding), contentAlignment = Alignment.Center) {
-                Text("$title logic coming soon...", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column {
+            TopAppBar(
+                title = { Text(title) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, null)
+                    }
+                }
+            )
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Screen coming soon", color = MaterialTheme.colorScheme.outline)
             }
         }
     }
 }
 
 @Composable
-fun Overlay(
-    visible: Boolean, 
-    springSpec: SpringSpec<IntOffset>, 
-    content: @Composable () -> Unit
-) {
+fun Overlay(visible: Boolean, animationSpec: SpringSpec<IntOffset> = spring(), content: @Composable () -> Unit) {
     AnimatedVisibility(
         visible = visible,
-        enter = slideInVertically(initialOffsetY = { it }, animationSpec = springSpec) + fadeIn(animationSpec = spring(stiffness = Spring.StiffnessLow)),
-        exit = slideOutVertically(targetOffsetY = { it }, animationSpec = springSpec) + fadeOut(animationSpec = spring(stiffness = Spring.StiffnessLow))
+        enter = slideInHorizontally(initialOffsetX = { it }),
+        exit = slideOutHorizontally(targetOffsetX = { it })
     ) {
-        content()
+        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            content()
+        }
     }
 }
 
@@ -301,55 +273,46 @@ fun MiniPlayer(
     onTogglePlay: () -> Unit,
     onClick: () -> Unit
 ) {
-    Surface(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(64.dp)
-            .clickable(
-                onClick = onClick,
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() }
-            ),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 0.dp
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            AsyncImage(
-                model = thumbnailUrl,
-                contentDescription = null,
-                modifier = Modifier.size(44.dp).clip(RoundedCornerShape(6.dp)),
-                contentScale = ContentScale.Crop
+        AsyncImage(
+            model = thumbnailUrl,
+            contentDescription = null,
+            modifier = Modifier
+                .size(48.dp)
+                .clip(RoundedCornerShape(8.dp)),
+            contentScale = ContentScale.Crop
+        )
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = trackTitle,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    trackTitle, 
-                    color = MaterialTheme.colorScheme.onSurface, 
-                    fontSize = 14.sp, 
-                    fontWeight = FontWeight.Bold, 
-                    maxLines = 1
-                )
-                Text(
-                    artistName, 
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, 
-                    fontSize = 12.sp, 
-                    maxLines = 1
-                )
-            }
-            IconButton(
-                onClick = onTogglePlay,
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(
-                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(28.dp)
-                )
-            }
+            Text(
+                text = artistName,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        IconButton(onClick = onTogglePlay) {
+            Icon(
+                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(32.dp)
+            )
         }
     }
 }

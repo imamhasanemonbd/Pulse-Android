@@ -20,7 +20,7 @@ import com.android.pulse.data.local.entity.*
         OfflineSongEntity::class,
         HomeCacheEntity::class
     ], 
-    version = 9,
+    version = 10, // Incremented to trigger data wipe via fallbackToDestructiveMigration
     exportSchema = false
 )
 abstract class PulseDatabase : RoomDatabase() {

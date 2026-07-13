@@ -35,4 +35,10 @@ interface InnerTubeApiService {
         @Body request: NextRequest,
         @Header("User-Agent") userAgent: String = InnerTubeClient.USER_AGENT_MWEB
     ): InnerTubeResponse
+
+    @POST("youtubei/v1/browse")
+    suspend fun getLyrics(
+        @Body request: LyricsRequest,
+        @Header("User-Agent") userAgent: String = InnerTubeClient.USER_AGENT_MWEB
+    ): InnerTubeResponse
 }
