@@ -54,7 +54,6 @@ object InnerTubeRepository {
     suspend fun searchMusic(query: String, params: String? = null): List<Track> {
         Log.e(TAG, "MUSIC-FILTER: searching '$query'")
         return try {
-            // WEB_REMIX naturally filters for YouTube Music results
             val request = SearchRequest(context = InnerTubeClient.createWebContext(), query = query, params = params)
             val response = InnerTubeClient.apiService.search(request, InnerTubeClient.USER_AGENT_WEB)
             response.responseContext?.visitorData?.let { InnerTubeClient.setVisitorData(it) }
@@ -93,6 +92,7 @@ object InnerTubeRepository {
             
             Log.d(TAG, "MUSIC-FILTER: Parsed ${allTracks.size} total music tracks")
             
+            // FALLBACK 1: If standard categories are missing, add defaults
             if (categories.isEmpty()) {
                 categories.addAll(listOf(
                     Category("Energize", "FEmusic_home", "ggMPOg1uX2V4Y2x1c2l2ZV9y"),
@@ -102,12 +102,22 @@ object InnerTubeRepository {
                 ))
             }
             
+            // FALLBACK 2: If we requested Related but got too few results, try broad Discovery instead
+            if (relatedToVideoId != null && allTracks.size < 5) {
+                Log.w(TAG, "MUSIC-FILTER: Low related results (${allTracks.size}), merging with discovery")
+                val browseResp = InnerTubeClient.apiService.browse(BrowseRequest(context = InnerTubeClient.createWebContext(), browseId = "FEmusic_home"), InnerTubeClient.USER_AGENT_WEB)
+                parseGreedy(browseResp, allTracks)
+            }
+
+            // FALLBACK 3: Ultimate trending fallback
             if (allTracks.isEmpty()) {
                 Log.e(TAG, "MUSIC-FILTER: Home yielded 0 tracks, using trending fallback")
                 allTracks.addAll(getTrending())
             }
             
             val distinct = allTracks.filter { it.id != relatedToVideoId }.distinctBy { it.id }
+            
+            // Smart Distribution
             val speedDial = distinct.take(12)
             val quickPicks = distinct.drop(12).take(30).ifEmpty { distinct.shuffled().take(20) }
             
@@ -118,9 +128,6 @@ object InnerTubeRepository {
         }
     }
 
-    /**
-     * GREEDY PARSER with music-specific validation.
-     */
     private fun parseGreedy(response: InnerTubeResponse, out: MutableList<Track>) {
         val root = convertToStd(response.contents)
         val commands = convertToStd(response.onResponseReceivedCommands)
@@ -136,7 +143,6 @@ object InnerTubeRepository {
         } else if (node is Map<*, *>) {
             val vid = extractVideoId(node)
             if (vid != null) {
-                // Validation: Only add if it looks like a music track
                 if (isMusicMedia(node)) {
                     val title = extractTitle(node)
                     if (title != null) {
@@ -158,13 +164,9 @@ object InnerTubeRepository {
         }
     }
 
-    /**
-     * Strict validation to filter out telefilms, vlogs, and general videos.
-     */
     private fun isMusicMedia(map: Map<*, *>): Boolean {
         val json = gson.toJson(map)
         
-        // 1. Check for specific Music Renderers/Types
         val hasMusicType = json.contains("MUSIC_VIDEO_TYPE_ATV") || 
                            json.contains("MUSIC_VIDEO_TYPE_OMV") || 
                            json.contains("MUSIC_PAGE_TYPE_TRACK") ||
@@ -172,24 +174,20 @@ object InnerTubeRepository {
         
         if (hasMusicType) return true
 
-        // 2. Blacklist common non-music terms in title/artist
         val title = (extractTitle(map) ?: "").lowercase()
         val artist = (extractArtist(map) ?: "").lowercase()
         val blacklist = listOf("telefilm", "vlog", "blog", "full movie", "episode", "drama", "documentary", "news")
         
         if (blacklist.any { title.contains(it) || artist.contains(it) }) return false
 
-        // 3. Optional: Duration check (Most songs are under 10 minutes)
-        // This is a heuristic; phonks/mixes might be longer, but telefilms are 30min+
         val durationText = json.substringAfter("\"simpleText\":\"", "").substringBefore("\"", "")
         if (durationText.contains(":") && !durationText.contains("::")) {
             val parts = durationText.split(":")
-            if (parts.size >= 3) return false // More than 1 hour is likely not a song
+            if (parts.size >= 3) return false 
             val mins = parts[0].toIntOrNull() ?: 0
             if (mins > 15 && !title.contains("mix") && !title.contains("phonk")) return false
         }
 
-        // If it's in a music-specific list item renderer, it's likely music
         return map.containsKey("musicResponsiveListItemRenderer") || 
                map.containsKey("musicTwoRowItemRenderer")
     }

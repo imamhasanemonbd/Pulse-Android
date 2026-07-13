@@ -24,12 +24,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.android.pulse.audio.AudioPlayerManager
 import com.android.pulse.data.local.entity.HomeCacheEntity
+import com.android.pulse.data.local.entity.toTrack
 import com.android.pulse.data.model.Track
 import com.android.pulse.data.remote.innertube.InnerTubeRepository
 import com.android.pulse.data.remote.innertube.model.Category
@@ -57,36 +59,33 @@ fun HomeView(
     var isRefreshing by remember { mutableStateOf(false) }
     var selectedCategory by remember { mutableStateOf<Category?>(null) }
     
-    val currentTrack by audioPlayerManager.currentTrack.collectAsState()
-    val history by audioPlayerManager.database.historyDao().getRecentHistory().collectAsState(initial = emptyList())
+    val historyEntities by audioPlayerManager.database.historyDao().getRecentHistory().collectAsState(initial = emptyList())
+    val recentlyPlayed = remember(historyEntities) { historyEntities.map { it.toTrack() } }
     
     val pullToRefreshState = rememberPullToRefreshState()
-    var lastRelatedTrackId by remember { mutableStateOf<String?>(null) }
 
-    fun refreshHome(category: Category? = null, relatedId: String? = null, forceRefresh: Boolean = false) {
+    fun performRefresh(category: Category? = null, forceNetwork: Boolean = false) {
         scope.launch {
-            if (forceRefresh) isRefreshing = true
-            else isLoading = true
+            if (forceNetwork) isRefreshing = true else isLoading = true
             
-            // Priority: relatedId (playback), then manual category, then history
-            val targetId = relatedId ?: if (category == null) history.firstOrNull()?.id else null
+            val targetId = recentlyPlayed.firstOrNull()?.id
+            android.util.Log.d("PULSE_TAG", "HomeView: performRefresh(cat=${category?.title}, related=$targetId)")
             
-            android.util.Log.d("PULSE_TAG", "Refreshing: cat=${category?.title}, related=$targetId")
             val data = InnerTubeRepository.getHomeData(category?.params, targetId)
+            android.util.Log.d("PULSE_TAG", "HomeView: Received data - QuickPicks=${data.quickPicks.size}, SpeedDial=${data.speedDial.size}")
             
             if (data.quickPicks.isNotEmpty() || data.speedDial.isNotEmpty()) {
                 homeData = data
                 
-                // CRITICAL: Only cache if it's a general discovery/category refresh, NOT a playback suggestion
-                if (relatedId == null) {
-                    audioPlayerManager.database.homeCacheDao().insertHomeCache(
-                        HomeCacheEntity(
-                            quickPicksJson = gson.toJson(data.quickPicks),
-                            speedDialJson = gson.toJson(data.speedDial),
-                            categoriesJson = gson.toJson(data.categories)
-                        )
+                audioPlayerManager.database.homeCacheDao().insertHomeCache(
+                    HomeCacheEntity(
+                        quickPicksJson = gson.toJson(data.quickPicks),
+                        speedDialJson = gson.toJson(data.speedDial),
+                        categoriesJson = gson.toJson(data.categories)
                     )
-                }
+                )
+            } else {
+                android.util.Log.w("PULSE_TAG", "HomeView: REPOSITORY RETURNED EMPTY DATA")
             }
             
             isLoading = false
@@ -94,32 +93,25 @@ fun HomeView(
         }
     }
 
-    // 1. Initial Load from Cache (Persistence)
     LaunchedEffect(Unit) {
-        val cache = audioPlayerManager.database.homeCacheDao().getHomeCache()
-        if (cache != null) {
-            val qpType = object : TypeToken<List<Track>>() {}.type
-            val sdType = object : TypeToken<List<Track>>() {}.type
-            val catType = object : TypeToken<List<Category>>() {}.type
+        scope.launch {
+            val cache = audioPlayerManager.database.homeCacheDao().getHomeCache()
+            if (cache != null) {
+                val qpType = object : TypeToken<List<Track>>() {}.type
+                val sdType = object : TypeToken<List<Track>>() {}.type
+                val catType = object : TypeToken<List<Category>>() {}.type
+                
+                homeData = HomeData(
+                    quickPicks = gson.fromJson(cache.quickPicksJson, qpType),
+                    speedDial = gson.fromJson(cache.speedDialJson, sdType),
+                    categories = gson.fromJson(cache.categoriesJson, catType)
+                )
+                android.util.Log.d("PULSE_TAG", "HomeView: Loaded from Cache - QP=${homeData.quickPicks.size}, SD=${homeData.speedDial.size}")
+            }
             
-            homeData = HomeData(
-                quickPicks = gson.fromJson(cache.quickPicksJson, qpType),
-                speedDial = gson.fromJson(cache.speedDialJson, sdType),
-                categories = gson.fromJson(cache.categoriesJson, catType)
-            )
-        }
-        
-        if (homeData.quickPicks.isEmpty()) {
-            refreshHome()
-        }
-    }
-
-    // 2. Dynamic Update: Trigger suggestions on song play
-    LaunchedEffect(currentTrack?.id) {
-        val newId = currentTrack?.id
-        if (newId != null && newId != lastRelatedTrackId) {
-            lastRelatedTrackId = newId
-            refreshHome(category = selectedCategory, relatedId = newId)
+            if (homeData.quickPicks.isEmpty() && homeData.speedDial.isEmpty()) {
+                performRefresh()
+            }
         }
     }
 
@@ -131,7 +123,7 @@ fun HomeView(
         PullToRefreshBox(
             isRefreshing = isRefreshing,
             state = pullToRefreshState,
-            onRefresh = { refreshHome(selectedCategory, forceRefresh = true) },
+            onRefresh = { performRefresh(selectedCategory, forceNetwork = true) },
             modifier = Modifier.fillMaxSize()
         ) {
             LazyColumn(
@@ -145,6 +137,7 @@ fun HomeView(
                     )
                 }
 
+                // CATEGORIES
                 item {
                     val moreCategories = listOf(
                         Category("Romance", "FEmusic_home", "ggMPOg16X2V4Y2x1c2l2ZV9y"),
@@ -166,10 +159,10 @@ fun HomeView(
                                     onClick = {
                                         if (selectedCategory == category) {
                                             selectedCategory = null
-                                            refreshHome(forceRefresh = true)
+                                            performRefresh(forceNetwork = true)
                                         } else {
                                             selectedCategory = category
-                                            refreshHome(category, forceRefresh = true)
+                                            performRefresh(category, forceNetwork = true)
                                         }
                                     },
                                     label = { 
@@ -190,24 +183,54 @@ fun HomeView(
                     }
                 }
 
-                if (isLoading && homeData.quickPicks.isEmpty()) {
+                if (isLoading && recentlyPlayed.isEmpty() && homeData.quickPicks.isEmpty()) {
                     item {
                         Box(modifier = Modifier.fillMaxWidth().height(300.dp), contentAlignment = Alignment.Center) {
                             CircularProgressIndicator()
                         }
                     }
                 } else {
-                    if (homeData.speedDial.isNotEmpty()) {
-                        item { SpeedDialSection(homeData.speedDial, audioPlayerManager) }
+                    // 1. RECENTLY PLAYED (3x3 Paged Grid)
+                    if (recentlyPlayed.isNotEmpty()) {
+                        item { RecentlyPlayedSection(recentlyPlayed, audioPlayerManager) }
                     }
+
+                    // ELASTIC DISTRIBUTION: Spread all available tracks across new sections
+                    val allDiscovery = (homeData.speedDial + homeData.quickPicks).distinctBy { it.id }.shuffled()
                     
-                    if (homeData.quickPicks.isNotEmpty()) {
-                        item { 
-                            QuickPicksSection(
-                                title = if (currentTrack != null) "Up next" else "Quick picks",
-                                tracks = homeData.quickPicks, 
-                                audioPlayerManager
-                            ) 
+                    if (allDiscovery.isNotEmpty()) {
+                        // 2. TOP HITS (Horizontal Card Row)
+                        val topHits = allDiscovery.take(8)
+                        item {
+                            TopHitsSection(
+                                title = if (selectedCategory != null) "${selectedCategory!!.title} Hits" else "Trending Hits",
+                                tracks = topHits,
+                                playerManager = audioPlayerManager
+                            )
+                        }
+
+                        // 3. VIBE MIX (Circle Avatar Row)
+                        val vibeMix = allDiscovery.drop(8).take(10)
+                        if (vibeMix.isNotEmpty()) {
+                            item {
+                                VibeMixSection(
+                                    title = "Your Vibe Mix",
+                                    tracks = vibeMix,
+                                    playerManager = audioPlayerManager
+                                )
+                            }
+                        }
+
+                        // 4. FEATURED (2x2 Grid)
+                        val featured = allDiscovery.drop(18).take(12)
+                        if (featured.isNotEmpty()) {
+                            item {
+                                FeaturedGridSection(
+                                    title = "Featured Selection",
+                                    tracks = featured,
+                                    playerManager = audioPlayerManager
+                                )
+                            }
                         }
                     }
                 }
@@ -218,13 +241,13 @@ fun HomeView(
 
 @UnstableApi
 @Composable
-fun SpeedDialSection(tracks: List<Track>, playerManager: AudioPlayerManager) {
+fun RecentlyPlayedSection(tracks: List<Track>, playerManager: AudioPlayerManager, title: String = "Recently played") {
     val pagedTracks = tracks.chunked(9)
     val pagerState = rememberPagerState(pageCount = { pagedTracks.size })
 
     Column(modifier = Modifier.padding(vertical = 16.dp)) {
         Text(
-            "Speed dial", 
+            title, 
             style = MaterialTheme.typography.titleLarge, 
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
@@ -247,7 +270,7 @@ fun SpeedDialSection(tracks: List<Track>, playerManager: AudioPlayerManager) {
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         rowTracks.forEach { track ->
-                            SpeedDialItem(
+                            HomeGridItem(
                                 track = track,
                                 modifier = Modifier.weight(1f),
                                 onClick = { playerManager.playTrack(track, tracks) }
@@ -274,8 +297,163 @@ fun SpeedDialSection(tracks: List<Track>, playerManager: AudioPlayerManager) {
     }
 }
 
+@UnstableApi
 @Composable
-fun SpeedDialItem(track: Track, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun TopHitsSection(title: String, tracks: List<Track>, playerManager: AudioPlayerManager) {
+    Column(modifier = Modifier.padding(vertical = 16.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+        
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            items(tracks) { track ->
+                Column(
+                    modifier = Modifier
+                        .width(160.dp)
+                        .clickable { playerManager.playTrack(track, tracks) }
+                ) {
+                    AsyncImage(
+                        model = track.thumbnail,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(160.dp)
+                            .clip(RoundedCornerShape(12.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        track.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        track.artist,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@UnstableApi
+@Composable
+fun VibeMixSection(title: String, tracks: List<Track>, playerManager: AudioPlayerManager) {
+    Column(modifier = Modifier.padding(vertical = 16.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+        
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(tracks) { track ->
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .width(100.dp)
+                        .clickable { playerManager.playTrack(track, tracks) }
+                ) {
+                    AsyncImage(
+                        model = track.thumbnail,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(100.dp)
+                            .clip(CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        track.title,
+                        style = MaterialTheme.typography.labelSmall,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@UnstableApi
+@Composable
+fun FeaturedGridSection(title: String, tracks: List<Track>, playerManager: AudioPlayerManager) {
+    val pagedTracks = tracks.chunked(4)
+    val pagerState = rememberPagerState(pageCount = { pagedTracks.size })
+
+    Column(modifier = Modifier.padding(vertical = 16.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            pageSpacing = 16.dp
+        ) { pageIndex ->
+            val pageTracks = pagedTracks[pageIndex]
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                pageTracks.chunked(2).forEach { rowTracks ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        rowTracks.forEach { track ->
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .aspectRatio(1.5f)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .clickable { playerManager.playTrack(track, tracks) }
+                            ) {
+                                AsyncImage(
+                                    model = track.thumbnail,
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.6f))))
+                                )
+                                Text(
+                                    track.title,
+                                    modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                        if (rowTracks.size == 1) Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun HomeGridItem(track: Track, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(
         modifier = modifier
             .aspectRatio(1f)
@@ -318,78 +496,6 @@ fun SpeedDialItem(track: Track, modifier: Modifier = Modifier, onClick: () -> Un
                 tint = Color.White.copy(alpha = 0.7f),
                 modifier = Modifier.size(12.dp)
             )
-        }
-    }
-}
-
-@UnstableApi
-@Composable
-fun QuickPicksSection(title: String, tracks: List<Track>, playerManager: AudioPlayerManager) {
-    val pagedTracks = tracks.chunked(4)
-    val pagerState = rememberPagerState(pageCount = { pagedTracks.size })
-
-    Column(modifier = Modifier.padding(vertical = 16.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            TextButton(onClick = { playerManager.playTrack(tracks[0], tracks) }) {
-                Text("Play all")
-            }
-        }
-
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxWidth().height(290.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            pageSpacing = 16.dp
-        ) { pageIndex ->
-            val pageTracks = pagedTracks[pageIndex]
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                pageTracks.forEach { track ->
-                    QuickPickItem(track) {
-                        playerManager.playTrack(track, tracks)
-                    }
-                }
-            }
-        }
-
-        if (pagedTracks.size > 1) {
-            PageIndicator(
-                pageCount = pagedTracks.size,
-                currentPage = pagerState.currentPage,
-                modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 12.dp)
-            )
-        }
-    }
-}
-
-@Composable
-fun QuickPickItem(track: Track, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        AsyncImage(
-            model = track.thumbnail,
-            contentDescription = null,
-            modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)),
-            contentScale = ContentScale.Crop
-        )
-        Spacer(modifier = Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-            Text(track.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        IconButton(onClick = { /* Options */ }) {
-            Icon(Icons.Default.MoreVert, null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
