@@ -4,6 +4,10 @@ import android.util.Log
 import com.android.pulse.data.model.Track
 import com.android.pulse.data.remote.innertube.model.*
 import com.google.gson.Gson
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.Request
+import java.net.URLEncoder
 
 /**
  * Singleton repository with strict Music-Only filtering logic and robust discovery.
@@ -61,9 +65,7 @@ object InnerTubeRepository {
             val tracks = mutableListOf<Track>()
             parseGreedy(response, tracks)
             
-            // --- METADATA SELF-HEALING (PORT FROM WEB) ---
-            // If any track (especially the top card) has "Unknown Artist", 
-            // try to find the correct artist from other results with the same title.
+            // --- METADATA SELF-HEALING ---
             for (i in tracks.indices) {
                 if (tracks[i].artist == "Unknown Artist") {
                     val cleanTitle = tracks[i].title.lowercase()
@@ -269,31 +271,36 @@ object InnerTubeRepository {
             addFromRuns(cardHeader?.get("title"))
             addFromRuns(cardHeader?.get("subtitle"))
         }
+        
+        // Path 1.1: Web Port - Check specific byline objects
+        addFromRuns(map["primaryByline"])
+        addFromRuns(map["secondaryByline"])
 
-        // Path 2: Flex Columns (Common in search/home lists)
+        // Path 2: Flex Columns
         (map["flexColumns"] as? List<*>)?.let { flex ->
-            flex.forEach { col ->
-                val r = (col as? Map<*, *>)?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
-                addFromRuns(r?.get("text"))
+            if (flex.size > 1) {
+                for (i in 1 until flex.size) {
+                    val col = (flex[i] as? Map<*, *>)?.get("musicResponsiveListItemFlexColumnRenderer") as? Map<*, *>
+                    addFromRuns(col?.get("text"))
+                    if (artistsList.isNotEmpty()) return artistsList.joinToString(", ")
+                    
+                    val text = parseRuns(col?.get("text"))
+                    if (text != null) {
+                        val lower = text.lowercase()
+                        if (lower.contains("views") || lower.contains("plays") || lower == "song" || lower == "video") continue
+                        return text.substringBefore(" • ").trim()
+                    }
+                }
             }
         }
 
-        // Path 3: Direct byline strings
         addFromRuns(map["longBylineText"])
         addFromRuns(map["shortBylineText"])
         addFromRuns(map["subtitle"])
         addFromRuns(map["bylineText"])
 
         if (artistsList.isNotEmpty()) return artistsList.joinToString(", ")
-
-        // Path 4: Direct subtitle fallback (cleaned)
-        val subtitle = (map["subtitle"] as? String) ?: parseRuns(map["subtitle"])
-        if (subtitle != null) {
-            val cleaned = subtitle.substringBefore(" • ").trim()
-            if (cleaned.isNotEmpty() && !cleaned.lowercase().contains("song")) return cleaned
-        }
-
-        return null
+        return (map["subtitle"] as? String)?.substringBefore(" • ")?.trim()
     }
 
     private fun extractThumbnail(map: Map<*, *>): String? {
@@ -361,44 +368,67 @@ object InnerTubeRepository {
         } catch (e: Exception) { emptyList() }
     }
 
-    suspend fun getLyrics(trackId: String): String? {
+    suspend fun getLyrics(trackId: String, title: String? = null, artist: String? = null, durationMs: Long = 0): String? {
+        // 1. HIGH PRIORITY: Try LRCLIB for Synced Lyrics (Musixmatch data)
+        if (title != null && artist != null) {
+            val durationSecs = (durationMs / 1000).toInt()
+            val lrc = fetchFromLrcLib(title, artist, durationSecs)
+            if (lrc != null) return lrc
+        }
+
+        // 2. FALLBACK: InnerTube (Official YouTube Music Source: Musixmatch/LyricFind)
         return try {
-            // 1. Fetch "Next" to get the lyrics browseId
             val nextReq = NextRequest(context = InnerTubeClient.createWebContext(), videoId = trackId)
             val nextResp = InnerTubeClient.apiService.next(nextReq, InnerTubeClient.USER_AGENT_WEB)
             val root = convertToStd(nextResp.contents) as? Map<*, *>
             
-            // Search for lyrics browseId in the response
             var lyricsBrowseId: String? = null
             
+            // Comprehensive recursive scan for lyrics browseId or tab
             fun findLyricsId(node: Any?) {
                 if (lyricsBrowseId != null || node == null) return
                 if (node is List<*>) node.forEach { findLyricsId(it) }
                 else if (node is Map<*, *>) {
-                    val browseEndpoint = node["browseEndpoint"] as? Map<*, *>
-                    if (browseEndpoint != null && browseEndpoint["browseId"]?.toString()?.startsWith("FEmusic_lyrics") == true) {
-                        lyricsBrowseId = browseEndpoint["browseId"].toString()
+                    // Method A: Check for explicit "Lyrics" tab label
+                    val title = parseRuns(node["title"])?.lowercase()
+                    if (title == "lyrics") {
+                        val browseEndpoint = node["endpoint"] as? Map<*, *> ?: node["navigationEndpoint"] as? Map<*, *>
+                        val id = (browseEndpoint?.get("browseEndpoint") as? Map<*, *>)?.get("browseId")?.toString()
+                        if (id != null) {
+                            lyricsBrowseId = id
+                            return
+                        }
+                    }
+                    
+                    // Method B: Direct browseId check
+                    val browseId = (node["browseEndpoint"] as? Map<*, *>)?.get("browseId")?.toString()
+                    if (browseId?.startsWith("FEmusic_lyrics") == true) {
+                        lyricsBrowseId = browseId
                         return
                     }
+                    
                     node.values.forEach { findLyricsId(it) }
                 }
             }
             findLyricsId(root)
 
             if (lyricsBrowseId != null) {
+                Log.d(TAG, "InnerTube: Resolved lyricsBrowseId: $lyricsBrowseId")
                 val lyricsReq = LyricsRequest(context = InnerTubeClient.createWebContext(), browseId = lyricsBrowseId!!)
                 val lyricsResp = InnerTubeClient.apiService.getLyrics(lyricsReq, InnerTubeClient.USER_AGENT_WEB)
                 val contents = convertToStd(lyricsResp.contents) as? Map<*, *>
                 
-                // Extract lyrics text from description
                 var lyricsText: String? = null
                 fun extractText(node: Any?) {
                     if (lyricsText != null || node == null) return
                     if (node is List<*>) node.forEach { extractText(it) }
                     else if (node is Map<*, *>) {
+                        // Official YT Music Lyrics Container
                         if (node.containsKey("musicDescriptionShelfRenderer")) {
                             val r = node["musicDescriptionShelfRenderer"] as? Map<*, *>
                             lyricsText = parseRuns(r?.get("description"))
+                            val source = parseRuns(r?.get("footer")) ?: "YouTube Music"
+                            Log.d(TAG, "InnerTube: Extracted lyrics from source: $source")
                             return
                         }
                         node.values.forEach { extractText(it) }
@@ -406,9 +436,59 @@ object InnerTubeRepository {
                 }
                 extractText(contents)
                 lyricsText
-            } else null
+            } else {
+                Log.w(TAG, "InnerTube: Could not find lyrics tab/ID for $trackId")
+                null
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Lyrics fetch failed", e)
+            null
+        }
+    }
+
+    private suspend fun fetchFromLrcLib(title: String, artist: String, durationSecs: Int): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Pre-sanitize for LRCLIB
+                val cleanTitle = title.substringBefore(" (").substringBefore(" |").trim()
+                val cleanArtist = artist.substringBefore(",").trim()
+                
+                val url = "https://lrclib.net/api/get?artist_name=${URLEncoder.encode(cleanArtist, "UTF-8")}&track_name=${URLEncoder.encode(cleanTitle, "UTF-8")}&duration=$durationSecs"
+                val request = Request.Builder().url(url).build()
+                
+                val response = InnerTubeClient.okHttpClient.newCall(request).execute()
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: return@withContext null
+                    val map = gson.fromJson(body, Map::class.java)
+                    
+                    val synced = map["syncedLyrics"] as? String
+                    if (!synced.isNullOrBlank()) {
+                        Log.d(TAG, "LRCLIB: Found SYNCED lyrics for '$cleanTitle'")
+                        return@withContext synced
+                    }
+                    
+                    val plain = map["plainLyrics"] as? String
+                    if (!plain.isNullOrBlank()) {
+                        Log.d(TAG, "LRCLIB: Found PLAIN lyrics for '$cleanTitle'")
+                        return@withContext plain
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "LRCLIB direct fetch failed, trying search...")
+                // Fallback: Try LRCLIB search if direct get fails
+                try {
+                     val searchUrl = "https://lrclib.net/api/search?q=${URLEncoder.encode("$artist $title", "UTF-8")}"
+                     val searchReq = Request.Builder().url(searchUrl).build()
+                     val searchResp = InnerTubeClient.okHttpClient.newCall(searchReq).execute()
+                     if (searchResp.isSuccessful) {
+                         val results = gson.fromJson(searchResp.body?.string(), List::class.java)
+                         if (results != null && results.isNotEmpty()) {
+                             val first = results[0] as Map<*, *>
+                             return@withContext (first["syncedLyrics"] ?: first["plainLyrics"]) as? String
+                         }
+                     }
+                } catch (se: Exception) { /* search failed too */ }
+            }
             null
         }
     }

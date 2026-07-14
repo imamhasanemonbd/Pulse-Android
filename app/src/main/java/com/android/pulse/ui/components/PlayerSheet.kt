@@ -212,8 +212,10 @@ fun PlayerSheet(
                         Box(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
                             SyncedLyrics(
                                 trackId = track!!.id,
-                                currentTimeMs = if (isDraggingSlider) (sliderPosition * duration).toLong() else currentTime,
-                                durationMs = duration
+                                title = track!!.title,
+                                artist = track!!.artist,
+                                durationMs = duration,
+                                currentTimeMs = if (isDraggingSlider) (sliderPosition * duration).toLong() else currentTime
                             )
                         }
                     } else if (showQueue) {

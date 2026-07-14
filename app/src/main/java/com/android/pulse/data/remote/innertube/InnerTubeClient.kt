@@ -1,6 +1,5 @@
 package com.android.pulse.data.remote.innertube
 
-import android.util.Log
 import com.android.pulse.data.remote.innertube.model.*
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -41,7 +40,7 @@ object InnerTubeClient {
         chain.proceed(requestBuilder.method(original.method, original.body).build())
     }
 
-    private val okHttpClient = OkHttpClient.Builder()
+    val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .addInterceptor(headerInterceptor)
         .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.NONE })
         .connectTimeout(30, TimeUnit.SECONDS)

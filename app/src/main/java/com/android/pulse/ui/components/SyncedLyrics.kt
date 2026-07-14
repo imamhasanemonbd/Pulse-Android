@@ -1,11 +1,9 @@
 package com.android.pulse.ui.components
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,29 +17,37 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.android.pulse.data.remote.innertube.InnerTubeRepository
+import kotlinx.coroutines.delay
+
+data class LyricLine(
+    val timeMs: Long,
+    val text: String
+)
 
 @Composable
-fun SyncedLyrics(trackId: String, currentTimeMs: Long, durationMs: Long) {
-    var lyricsText by remember { mutableStateOf("") }
+fun SyncedLyrics(trackId: String, title: String, artist: String, durationMs: Long, currentTimeMs: Long) {
+    var rawLyrics by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
-    val coroutineScope = rememberCoroutineScope()
-
+    
+    val lyricLines = remember(rawLyrics) { parseLrc(rawLyrics) }
+    
     LaunchedEffect(trackId) {
         isLoading = true
         try {
-            lyricsText = InnerTubeRepository.getLyrics(trackId) ?: "Lyrics not available."
+            rawLyrics = InnerTubeRepository.getLyrics(trackId, title, artist, durationMs) ?: ""
         } catch (e: Exception) {
-            lyricsText = "Lyrics not available."
+            rawLyrics = ""
         } finally {
             isLoading = false
         }
     }
 
-    val lines = lyricsText.split("\n").filter { it.isNotBlank() }
-    val activeLineIndex = if (durationMs > 0 && lines.isNotEmpty()) {
-        ((currentTimeMs.toFloat() / durationMs.toFloat()) * lines.size).toInt().coerceIn(0, lines.size - 1)
-    } else {
-        -1
+    val activeLineIndex = remember(currentTimeMs, lyricLines) {
+        if (lyricLines.isEmpty()) -1
+        else {
+            val index = lyricLines.indexOfLast { it.timeMs <= currentTimeMs }
+            if (index == -1 && lyricLines.isNotEmpty()) 0 else index
+        }
     }
 
     val listState = rememberLazyListState()
@@ -55,7 +61,7 @@ fun SyncedLyrics(trackId: String, currentTimeMs: Long, durationMs: Long) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .graphicsLayer { alpha = 0.99f } // Required for BlendMode.DstIn
+            .graphicsLayer { alpha = 0.99f }
             .drawWithContent {
                 drawContent()
                 drawRect(
@@ -71,9 +77,9 @@ fun SyncedLyrics(trackId: String, currentTimeMs: Long, durationMs: Long) {
     ) {
         if (isLoading) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(text = "Loading Lyrics...", color = Color.Gray)
+                Text(text = "Searching Lyrics...", color = Color.Gray)
             }
-        } else if (lines.isEmpty()) {
+        } else if (lyricLines.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(text = "Lyrics not available.", color = Color.White.copy(alpha = 0.3f))
             }
@@ -81,26 +87,63 @@ fun SyncedLyrics(trackId: String, currentTimeMs: Long, durationMs: Long) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 100.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
+                contentPadding = PaddingValues(vertical = 120.dp),
+                verticalArrangement = Arrangement.spacedBy(24.dp)
             ) {
-                itemsIndexed(lines) { index, line ->
+                itemsIndexed(lyricLines) { index, line ->
                     val isActive = index == activeLineIndex
                     Text(
-                        text = line,
-                        fontSize = if (isActive) 24.sp else 20.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isActive) Color.White else Color.White.copy(alpha = 0.3f),
+                        text = line.text,
+                        fontSize = if (isActive) 26.sp else 22.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (isActive) Color.White else Color.White.copy(alpha = 0.25f),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 24.dp)
                             .graphicsLayer {
-                                scaleX = if (isActive) 1.04f else 1f
-                                scaleY = if (isActive) 1.04f else 1f
+                                scaleX = if (isActive) 1.05f else 1f
+                                scaleY = if (isActive) 1.05f else 1f
                             }
                     )
                 }
             }
         }
     }
+}
+
+/**
+ * Robust LRC Parser (Support [mm:ss.xx] and [mm:ss])
+ */
+fun parseLrc(lrc: String): List<LyricLine> {
+    if (lrc.isBlank()) return emptyList()
+    
+    // Check if it is LRC format
+    if (!lrc.contains("[")) {
+        // Fallback: Static text lyrics (simulated timings)
+        return lrc.split("\n").filter { it.isNotBlank() }.mapIndexed { i, text ->
+            LyricLine(i * 3000L, text) // 3s gap
+        }
+    }
+
+    val lines = mutableListOf<LyricLine>()
+    // Improved regex to handle various LRC timestamp formats
+    val pattern = "\\[(\\d+):(\\d+)[.:](\\d+)?\\](.*)".toRegex()
+
+    lrc.lines().forEach { rawLine ->
+        val match = pattern.find(rawLine)
+        if (match != null) {
+            val mins = match.groupValues[1].toLong()
+            val secs = match.groupValues[2].toLong()
+            val msPart = match.groupValues[3].let { if (it.isEmpty()) "0" else it }.take(3).padEnd(3, '0').toLong()
+            
+            val totalMs = (mins * 60 * 1000) + (secs * 1000) + msPart
+            val text = match.groupValues[4].trim()
+            
+            if (text.isNotBlank()) {
+                lines.add(LyricLine(totalMs, text))
+            }
+        }
+    }
+    
+    return lines.sortedBy { it.timeMs }
 }
